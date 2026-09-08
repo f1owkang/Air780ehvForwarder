@@ -9,19 +9,31 @@ local SMTP_CONNECT_TIMEOUT = 15000
 local smtp_seq = 0
 
 --- 从socket读取SMTP响应
+-- 注意新版固件 socket.read 返回 (ok, data) 两个值, 只接第一个会得到布尔值;
+-- libnet.wait 在任何网络事件时都会返回, 必须循环等到真正读到数据
 -- @param netc socket控制对象
 -- @param taskName 任务名称
 -- @param timeout 超时时间(毫秒)
 -- @return 响应字符串 or nil
 local function readResponse(netc, taskName, timeout)
-    timeout = timeout or SMTP_TIMEOUT
-    socket.rx(netc, 1024)
-    libnet.wait(taskName, timeout, netc)
-    local data = socket.read(netc, 1024)
-    if type(data) ~= "string" then
-        return nil
+    local deadline = mcu.ticks() + (timeout or SMTP_TIMEOUT)
+    local buffer = ""
+    while mcu.ticks() < deadline do
+        local ok = libnet.wait(taskName, deadline - mcu.ticks(), netc)
+        if not ok then
+            return nil  -- 网络异常
+        end
+        local read_ok, data = socket.read(netc, 1500)
+        if read_ok and type(data) == "string" and data ~= "" then
+            buffer = buffer .. data
+            -- 凑齐一整行(以换行结尾)再返回, 防止响应分片
+            if buffer:find("\n") then
+                return buffer
+            end
+        end
+        -- 非数据事件, 继续等待
     end
-    return data
+    return nil
 end
 
 --- 发送SMTP命令并读取响应
@@ -31,16 +43,13 @@ end
 -- @param timeout 超时时间(毫秒)
 -- @return 响应字符串 or nil
 local function sendCommand(netc, taskName, cmd, timeout)
+    timeout = timeout or SMTP_TIMEOUT
     log.debug("util_smtp", "发送:", (cmd or ""):gsub("\r\n$", ""))
-    socket.tx(netc, cmd)
-    libnet.wait(taskName, timeout or SMTP_TIMEOUT, netc)
-    socket.rx(netc, 1024)
-    libnet.wait(taskName, timeout or SMTP_TIMEOUT, netc)
-    local data = socket.read(netc, 1024)
-    if type(data) ~= "string" then
+    if not libnet.tx(taskName, timeout, netc, cmd) then
+        log.error("util_smtp", "命令发送失败")
         return nil
     end
-    return data
+    return readResponse(netc, taskName, timeout)
 end
 
 --- 检查SMTP响应码
@@ -110,8 +119,9 @@ local function smtpSendInternal(rule, msg, taskName)
         return false
     end
 
-    -- 配置SSL
-    socket.config(netc, nil, nil, ssl)
+    -- 配置SSL (参数: netc, 本地端口, 是否UDP, 是否TLS; 显式传 false 防 nil 参数错位)
+    local cfg_ok = socket.config(netc, nil, false, ssl)
+    log.info("util_smtp", "socket.config", cfg_ok)
 
     -- 连接服务器
     if not libnet.connect(taskName, SMTP_CONNECT_TIMEOUT, netc, rule.smtp_server, port) then
