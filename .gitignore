@@ -1,0 +1,15 @@
+# 本地扫描工具产物
+.mimosa/
+
+# AI 会话工作文档（设计过程记录，不随仓库发布）
+docs/superpowers/
+
+# 系统与编辑器杂项
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
+~$*
+
+# Luatools 本地生成物
+.luatools/
