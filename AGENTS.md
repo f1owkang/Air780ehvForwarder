@@ -2,7 +2,12 @@
 
 ## 项目概述
 
-基于 LuatOS 的短信转发器固件（纯 Lua，无构建系统、无自动化测试，验证只能真机烧录看串口日志）。git 仓库托管于 [f1owkang/Air780ehvForwarder](https://github.com/f1owkang/Air780ehvForwarder)（main 分支），**提交必须 GPG 签名**（密钥在智能卡上，`gpg.program` 已指向原生 GnuPG）。接收短信后按 `config.lua` 中 `FORWARD_RULES` 的规则匹配（关键词或 Lua pattern），转发到企业微信/飞书/钉钉/自定义 webhook/邮件/QQ 等渠道。**全部源码位于 `script/` 目录**（Luatools 烧录时直接选择该文件夹）；文档统一在 `docs/`（CHANGELOG、硬件手册、设计文档），根目录仅保留 README / AGENTS / LICENSE。
+基于 LuatOS 的短信转发器固件（纯 Lua，无构建系统、无自动化测试，验证只能真机烧录看串口日志）。git 仓库托管于 [f1owkang/Air780ehvForwarder](https://github.com/f1owkang/Air780ehvForwarder)（main 分支），**提交必须 GPG 签名**（`git commit -S` 即可；签名证书在智能卡上，`gpg.program` 已配置好，无需也无法读出私钥）。接收短信后按 `config.lua` 中 `FORWARD_RULES` 的规则匹配（关键词或 Lua pattern），转发到企业微信/飞书/钉钉/自定义 webhook/邮件/QQ 等渠道。**全部源码位于 `script/` 目录**（Luatools 烧录时直接选择该文件夹）；文档统一在 `docs/`（CHANGELOG、硬件手册、设计文档），根目录仅保留 README / AGENTS / LICENSE。
+
+## 安全红线
+
+- 禁止读取、打印、复制或上传任何真实凭据：`config.lua` 等文件中的 webhook key / secret / SMTP 密码 / `QQBOT_SECRET`（示例占位符除外），以及 GPG/SSH 私钥等本机凭据。
+- 对外发送与发布操作（git push、上传文件、向真实 webhook 地址发调试请求）必须先获得用户明确指示，不得自行执行；push 一律 GPG 签名。
 
 **目标硬件：Air780EHV**（用户确认，使用 LuatOS-SoC_V2050 的 101 号 64 位固件）。本项目改编自 Air780E/EP 的上游工程，`PROJECT` 已更正为 `air780ehv_forwarder`。硬件问题先查 `docs/Air780EHV硬件手册V1.1.pdf`。
 
