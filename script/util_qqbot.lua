@@ -12,8 +12,9 @@ local TaskManager = require "util_task"
 
 local util_qqbot = {}
 
--- intents: GROUP_AND_C2C_EVENT (1 << 25), 一个位同时订阅单聊 C2C_MESSAGE_CREATE 和群@ GROUP_AT_MESSAGE_CREATE
-local INTENTS_GROUP_C2C = 33554432
+-- intents: GROUP_AND_C2C_EVENT (1 << 25) 订阅单聊/群消息与生命周期事件
+--         + INTERACTION (1 << 26) 订阅按钮回调事件
+local INTENTS_GROUP_C2C = 33554432 + 67108864
 
 -- 非白名单用户欢迎消息的每 openid 回复上限 (防刷)
 local WELCOME_MAX = 3
@@ -43,6 +44,8 @@ local last_ack_time = 0        -- mcu.ticks(), 心跳 ACK 监控用
 local recent_msg_ids = {}      -- msg_id 去重环形缓存
 local welcome_count = {}       -- openid -> 已回复欢迎消息次数 (内存计数, 重启清零)
 local pending_confirm = {}     -- openid -> { action, expire } 危险指令二次确认 (mcu.ticks 毫秒)
+local push_paused = {}         -- openid -> true: 用户关闭主动消息/删除好友, 暂停对其主动推送
+local group_push_paused = {}   -- group_openid -> true: 群管理员关闭主动消息, 暂停对该群推送
 
 local access_token = nil
 local token_expire_at = 0      -- os.time() 秒
@@ -480,9 +483,28 @@ local function buildStatus()
         if csq and csq >= 0 and csq <= 31 then
             sig = sig .. " · CSQ " .. csq
         end
+        -- RSRQ/SNR 补充网络质量细节 (固件不支持时跳过, 不阻断整个状态卡片)
+        local ok_q, rsrq = pcall(mobile.rsrq)
+        if ok_q and type(rsrq) == "number" and rsrq ~= 0 then
+            sig = sig .. " · RSRQ " .. string.format("%.1f", rsrq) .. " dB"
+        end
+        local ok_s, snr = pcall(mobile.snr)
+        if ok_s and type(snr) == "number" and snr ~= 0 then
+            sig = sig .. " · SNR " .. string.format("%.1f", snr) .. " dB"
+        end
         lines[#lines + 1] = sig
     else
         lines[#lines + 1] = mdBold("信号") .. "　获取失败"
+    end
+
+    -- 供电电压 (低电时状态卡片可见, 配合 main.lua 的周期告警)
+    local volt = util_mobile.getVoltage()
+    if volt then
+        local volt_text = string.format("%.2f V", volt / 1000)
+        if volt < (config.BAT_LOW_MV or 3500) then
+            volt_text = volt_text .. "（偏低）"
+        end
+        lines[#lines + 1] = mdBold("电源") .. "　" .. volt_text
     end
 
     -- 网络
@@ -587,7 +609,9 @@ local function cmdFlymode()
 end
 
 --- 构建按钮键盘: entries 为字符串或 { label, style } (style: 0=灰色线框, 1=蓝色线框), 每行最多 4 个
--- permission 限定仅发起人可点击; action type=2 + enter=true 即点击即发送指令
+-- 使用回调按钮(action type=1): 点击触发 INTERACTION_CREATE 直达后台, 不在会话里留下指令文本;
+-- permission type=2 所有人可点: type=0 指定用户在部分客户端会误报"无权限操作",
+-- 真正的权限由指令层 openid 白名单把关
 local function buildKeyboard(openid, entries)
     if not openid then
         return nil
@@ -602,12 +626,9 @@ local function buildKeyboard(openid, entries)
             id = tostring(i),
             render_data = { label = label, visited_label = label .. " ✓", style = style },
             action = {
-                type = 2,
-                -- type=2 所有人可点: type=0 指定用户在部分客户端会误报"无权限操作";
-                -- 按钮仅代发指令文本, 真正的权限由指令层 openid 白名单把关
+                type = 1,
                 permission = { type = 2 },
                 data = label,
-                enter = true,
             },
         }
         if #row >= 4 then
@@ -644,14 +665,11 @@ local function cmdConfirm(arg, ctx)
         return "没有待确认的操作"
     end
     if p.action == "reboot" then
-        -- 先回复再重启, 让回复来得及发出
+        -- 先回复再重启: 3 秒后请求 main.lua 的统一重启协程完成清理与复位
+        -- (定时器回调里严禁 sys.wait, 只发事件)
         sys.timerStart(function()
             log.warn("util_qqbot", "指令触发重启")
-            if cleanupAllTasks then
-                cleanupAllTasks()
-            end
-            sys.wait(1000)
-            rtos.restart()
+            sys.publish("DEVICE_RESTART")
         end, 3000)
         return "✅ 已确认，设备 3 秒后重启…"
     end
@@ -891,6 +909,43 @@ local function processLifecycleEvent(t, d)
 
     elseif t == "GROUP_DEL_ROBOT" then
         log.info("util_qqbot", "机器人被移出群", d.group_openid)
+
+    elseif t == "FRIEND_DEL" then
+        -- 用户删除机器人: 暂停对其主动推送, 避免无效推送浪费配额
+        local openid = d.openid
+        log.info("util_qqbot", "用户删除机器人", openid)
+        if type(openid) == "string" and openid ~= "" then
+            push_paused[openid] = true
+        end
+
+    elseif t == "C2C_MSG_REJECT" then
+        -- 用户关闭了单聊主动消息开关, 此后 pushToUser 会静默失败
+        local openid = d.openid
+        log.warn("util_qqbot", "用户关闭单聊主动消息", openid)
+        if type(openid) == "string" and openid ~= "" then
+            push_paused[openid] = true
+        end
+
+    elseif t == "C2C_MSG_RECEIVE" then
+        local openid = d.openid
+        log.info("util_qqbot", "用户重新开启单聊主动消息", openid)
+        if type(openid) == "string" and openid ~= "" then
+            push_paused[openid] = nil
+        end
+
+    elseif t == "GROUP_MSG_REJECT" then
+        local group_openid = d.group_openid
+        log.warn("util_qqbot", "群管理员关闭群主动消息", group_openid)
+        if type(group_openid) == "string" and group_openid ~= "" then
+            group_push_paused[group_openid] = true
+        end
+
+    elseif t == "GROUP_MSG_RECEIVE" then
+        local group_openid = d.group_openid
+        log.info("util_qqbot", "群管理员重新开启群主动消息", group_openid)
+        if type(group_openid) == "string" and group_openid ~= "" then
+            group_push_paused[group_openid] = nil
+        end
     end
 end
 
@@ -939,6 +994,62 @@ local function processMessage(t, d)
             replyGroup(group_openid, msg_id, 1, reply.text, reply.keyboard)
         else
             replyGroup(group_openid, msg_id, 1, reply)
+        end
+    end
+end
+
+--- 处理按钮回调事件 (独立协程中执行)
+-- 流程: PUT /interactions/{id} 回应(否则客户端一直 loading) -> 白名单校验 -> 执行指令 -> event_id 被动回复
+local function processInteraction(d)
+    local interaction_id = d.id
+    local scene = d.scene
+    local resolved = (d.data and d.data.resolved) or {}
+    local cmd = resolved.button_data
+
+    -- type=11 消息按钮必须先回应回调, 同一 interaction_id 只能回应一次
+    if type(interaction_id) == "string" and interaction_id ~= "" then
+        local ack_code = qqApi("PUT", "/interactions/" .. interaction_id, { code = 0 })
+        log.info("util_qqbot", "按钮回调已回应", interaction_id, "code", ack_code)
+    end
+
+    if type(cmd) ~= "string" or cmd == "" then
+        log.warn("util_qqbot", "按钮回调缺少 button_data", interaction_id)
+        return
+    end
+
+    if scene == "group" then
+        local openid = d.group_member_openid
+        local group_openid = d.group_openid
+        if type(openid) ~= "string" or type(group_openid) ~= "string" then
+            return
+        end
+        log.info("util_qqbot", "群按钮回调", "群", group_openid, "openid", openid, "指令", cmd)
+        if not isAllowed(openid) then
+            postMessage("/v2/groups/" .. group_openid .. "/messages", buildWelcomeText(openid), nil, nil, nil, interaction_id)
+            return
+        end
+        local reply = handleCommand(cmd, { openid = openid })
+        if type(reply) == "table" then
+            postMessage("/v2/groups/" .. group_openid .. "/messages", reply.text, nil, nil, reply.keyboard, interaction_id)
+        else
+            postMessage("/v2/groups/" .. group_openid .. "/messages", reply, nil, nil, nil, interaction_id)
+        end
+    else
+        -- 默认按单聊处理
+        local openid = d.user_openid
+        if type(openid) ~= "string" or openid == "" then
+            return
+        end
+        log.info("util_qqbot", "单聊按钮回调", openid, "指令", cmd)
+        if not isAllowed(openid) then
+            postMessage("/v2/users/" .. openid .. "/messages", buildWelcomeText(openid), nil, nil, nil, interaction_id)
+            return
+        end
+        local reply = handleCommand(cmd, { openid = openid })
+        if type(reply) == "table" then
+            postMessage("/v2/users/" .. openid .. "/messages", reply.text, nil, nil, reply.keyboard, interaction_id)
+        else
+            postMessage("/v2/users/" .. openid .. "/messages", reply, nil, nil, nil, interaction_id)
         end
     end
 end
@@ -1007,13 +1118,24 @@ local function handleWsMessage(text)
                     log.error("util_qqbot", "消息处理异常", err)
                 end
             end)
-        elseif t == "FRIEND_ADD" or t == "GROUP_ADD_ROBOT" or t == "GROUP_DEL_ROBOT" then
+        elseif t == "FRIEND_ADD" or t == "GROUP_ADD_ROBOT" or t == "GROUP_DEL_ROBOT"
+            or t == "FRIEND_DEL" or t == "C2C_MSG_REJECT" or t == "C2C_MSG_RECEIVE"
+            or t == "GROUP_MSG_REJECT" or t == "GROUP_MSG_RECEIVE" then
             -- 生命周期事件同样派生协程处理
             local d = msg.d or {}
             sys.taskInit(function()
                 local ok2, err = pcall(processLifecycleEvent, t, d)
                 if not ok2 then
                     log.error("util_qqbot", "生命周期事件处理异常", err)
+                end
+            end)
+        elseif t == "INTERACTION_CREATE" then
+            -- 按钮回调事件: 先回应回调, 再执行指令, 用 event_id 被动回复
+            local d = msg.d or {}
+            sys.taskInit(function()
+                local ok2, err = pcall(processInteraction, d)
+                if not ok2 then
+                    log.error("util_qqbot", "按钮回调处理异常", err)
                 end
             end)
         else
@@ -1235,6 +1357,10 @@ function util_qqbot.pushToUser(openid, content)
     if type(content) ~= "string" or content == "" then
         return false
     end
+    if push_paused[openid] then
+        log.warn("util_qqbot", "该用户已关闭主动消息/删除好友, 跳过推送", openid)
+        return false
+    end
     local code, resp = postMessage("/v2/users/" .. openid .. "/messages", utf8Sub(content, 1500), nil, nil)
     local ok = type(code) == "number" and code >= 200 and code < 300
     if ok then
@@ -1255,6 +1381,10 @@ function util_qqbot.pushToGroup(group_openid, content)
         return false
     end
     if type(content) ~= "string" or content == "" then
+        return false
+    end
+    if group_push_paused[group_openid] then
+        log.warn("util_qqbot", "该群已关闭主动消息, 跳过推送", group_openid)
         return false
     end
     local code, resp = postMessage("/v2/groups/" .. group_openid .. "/messages", utf8Sub(content, 1500), nil, nil)

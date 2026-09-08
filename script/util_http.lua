@@ -39,7 +39,15 @@ function util_http.fetch(timeout, method, url, headers, body)
     util_netled.blink(50, 50)
 
     log.debug("util_http.fetch", "开始请求", "id:", id)
-    res_code, res_headers, res_body = http.request(method, url, headers, body, opts).wait()
+    -- pcall 兜底: 请求异常时计数与 LED 也必须归位, 否则 LED 永久快闪
+    local ok, code, r_headers, r_body = pcall(function()
+        return http.request(method, url, headers, body, opts).wait()
+    end)
+    if ok then
+        res_code, res_headers, res_body = code, r_headers, r_body
+    else
+        log.error("util_http.fetch", "请求异常", "id:", id, code)
+    end
     log.debug("util_http.fetch", "请求结束", "id:", id, "code:", res_code, "desc:", luat_http_code_desc[res_code])
 
     http_running_count = http_running_count - 1

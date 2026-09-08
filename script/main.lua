@@ -1,5 +1,5 @@
 PROJECT = "air780ehv_forwarder"
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 
 log.setLevel("DEBUG")
 log.info("main", PROJECT, VERSION)
@@ -14,7 +14,10 @@ local okConfig = pcall(function()
 end)
 if not okConfig then
     log.error("main", "缺少 config.lua! 请复制 script/config.example.lua 为 script/config.lua, 修改后重新烧录")
-    rtos.restart()
+    -- rtos.restart 可能立即复位也可能返回, 原地挂死避免后续 nil 崩溃
+    while true do
+        sys.wait(60000)
+    end
 end
 
 -- 添加硬狗防止程序卡死
@@ -146,8 +149,58 @@ local function isSmsAdmin(sender_number)
 end
 
 -- 短信接收回调
+-- 短信编码兜底: 部分运营商网关下发 GBK/GB2312, 固件按错误编码解码会乱码,
+-- 检测到非合法 UTF-8 时尝试用 iconv 转码 (101 号固件内置, 全 pcall 保护)
+local function tryGbkConvert(content)
+    local ok_cd, cd = pcall(iconv.open, "utf8", "gb2312")
+    if not ok_cd or not cd then
+        return content
+    end
+    local ok_cv, converted = pcall(function()
+        local out = cd:iconv(content)
+        iconv.close(cd)
+        return out
+    end)
+    if ok_cv and type(converted) == "string" and converted ~= "" then
+        log.info("smsCallback", "短信按 GB2312 转码, 原长度", #content, "新长度", #converted)
+        return converted
+    end
+    pcall(iconv.close, cd)
+    return content
+end
+
+-- 快速校验是否为合法 UTF-8, 不合法则尝试转码
+local function fixSmsEncoding(content)
+    if type(content) ~= "string" or content == "" then
+        return content
+    end
+    local i, n = 1, #content
+    while i <= n do
+        local b = content:byte(i)
+        if b < 0x80 then
+            i = i + 1
+        elseif b < 0xC0 then
+            return tryGbkConvert(content)  -- 以续字节开头, 非法
+        else
+            local len = (b < 0xE0 and 2) or (b < 0xF0 and 3) or 4
+            if i + len - 1 > n then
+                return tryGbkConvert(content)  -- 尾部截断的半个字符
+            end
+            for j = i + 1, i + len - 1 do
+                local c = content:byte(j)
+                if c < 0x80 or c >= 0xC0 then
+                    return tryGbkConvert(content)  -- 续字节不连续
+                end
+            end
+            i = i + len
+        end
+    end
+    return content
+end
+
 sms.setNewSmsCb(function(sender_number, sms_content, m)
     local time = string.format("%d/%02d/%02d %02d:%02d:%02d", m.year + 2000, m.mon, m.day, m.hour, m.min, m.sec)
+    sms_content = fixSmsEncoding(sms_content)
     log.info("smsCallback", time, sender_number, sms_content)
 
     -- 缓存最近短信, 供 Qbot 等交互通道查询
@@ -156,7 +209,8 @@ sms.setNewSmsCb(function(sender_number, sms_content, m)
     -- 短信控制
     local is_sms_ctrl = false
     -- 改进的正则表达式，支持国际号码格式
-    local receiver_number, sms_content_to_be_sent = sms_content:match("^SMS,([%+]?%d%d%d%d%d%d?%d?%d?%d?%d?%d?%d?%d?%d?),(.+)$")
+    -- 号码位数统一在下方校验（5~20 位），这里只负责拆分指令格式
+    local receiver_number, sms_content_to_be_sent = sms_content:match("^SMS,([%+]?%d+),(.+)$")
     receiver_number, sms_content_to_be_sent = receiver_number or "", sms_content_to_be_sent or ""
 
     -- 增强号码验证
@@ -261,30 +315,26 @@ sys.taskInit(function()
     local restart_enabled = config.RESTART_ENABLED  -- 从配置读取重启开关
     local restart_interval = config.RESTART_INTERVAL -- 从配置读取重启间隔
 
+    -- 设备重启管理：定时器回调里严禁 sys.wait, 统一发 DEVICE_RESTART 事件,
+    -- 由常驻重启协程完成清理与重启 (cleanupAllTasks 定义在本文件尾部, 协程启动时全局已就绪)
     if restart_enabled then
         sys.timerLoopStart(function()
             log.info("main", "准备重启设备", "重启间隔", restart_interval / 1000 / 60, "分钟")
 
             -- 检查是否有正在进行的操作
-                local task_list = util_task.list()
+            local task_list = util_task.list()
             if #task_list > 0 then
                 log.info("main", "发现活跃任务，延迟重启", "任务数量", #task_list)
                 for _, task_name in ipairs(task_list) do
                     log.info("main", "活跃任务", task_name)
                 end
-                -- 等待1分钟后再尝试
                 sys.timerStart(function()
                     log.info("main", "延迟重启设备")
-                    cleanupAllTasks()
-                    sys.wait(2000)  -- 等待任务清理完成
-                    rtos.restart()
+                    sys.publish("DEVICE_RESTART")
                 end, 60000)
             else
-                -- 没有活跃任务，直接重启
                 log.info("main", "无活跃任务，立即重启设备")
-                cleanupAllTasks()
-                sys.wait(1000)  -- 等待清理完成
-                rtos.restart()
+                sys.publish("DEVICE_RESTART")
             end
         end, restart_interval)
     else
@@ -410,5 +460,41 @@ end
 
 -- 设置调试模式
 util_task.setDebug(false)  -- 可设置为true查看详细日志
+
+-- 统一重启协程: 所有重启请求(DEVICE_RESTART 事件)都在协程内完成清理与复位,
+-- 定时器/回调里严禁 sys.wait, 只发事件
+sys.taskInit(function()
+    while true do
+        sys.waitUntil("DEVICE_RESTART")
+        log.info("main", "执行设备重启流程")
+        cleanupAllTasks()
+        sys.wait(1000)  -- 等待任务清理完成
+        rtos.restart()
+    end
+end)
+
+-- 供电电压监控: 周期读取 VBAT, 低于阈值时走备用通知告警 (config.BAT_MONITOR 关闭则跳过)
+sys.taskInit(function()
+    if config.BAT_MONITOR == false then
+        log.info("main", "电压监控已禁用", "BAT_MONITOR", config.BAT_MONITOR)
+        return
+    end
+    sys.waitUntil("IP_READY", config.NETWORK_TIMEOUT_LONG)
+    local low_threshold = config.BAT_LOW_MV or 3500  -- 毫伏
+    local last_warn = 0
+    while true do
+        local mv = util_mobile.getVoltage()
+        if mv and mv > 0 then
+            log.info("main", "供电电压", string.format("%.2f V", mv / 1000))
+            if mv < low_threshold and mcu.ticks() - last_warn > 3600000 then  -- 低电每小时最多告警一次
+                last_warn = mcu.ticks()
+                log.warn("main", "供电电压过低", mv .. "mV < " .. low_threshold .. "mV")
+                util_notify.add("#BAT_LOW 供电电压过低: " .. string.format("%.2f V", mv / 1000)
+                    .. "（阈值 " .. string.format("%.2f V", low_threshold / 1000) .. "），请检查供电")
+            end
+        end
+        sys.wait(config.BAT_CHECK_INTERVAL or 600000)  -- 默认 10 分钟一次
+    end
+end)
 
 sys.run()

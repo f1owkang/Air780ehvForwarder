@@ -143,6 +143,27 @@ function util_mobile.getBand()
     local info = mobile.getCellInfo()[1] or {}
     return info.band or -1
 end
+
+--- 读取供电电压 (VBAT, 毫伏), 用于状态展示与低电告警
+-- @return number|nil 电压毫伏值, 固件/平台不支持或读取失败时返回 nil
+function util_mobile.getVoltage()
+    local ok, mv = pcall(function()
+        if adc == nil or adc.CH_VBAT == nil then
+            return nil
+        end
+        adc.open(adc.CH_VBAT)
+        local v = adc.read(adc.CH_VBAT)
+        adc.close(adc.CH_VBAT)
+        if type(v) == "number" and v > 0 then
+            return v
+        end
+        return nil
+    end)
+    if ok then
+        return mv
+    end
+    return nil
+end
 --- 获取运营商
 -- @param is_zh 是否返回中文
 -- @return 运营商 or ""

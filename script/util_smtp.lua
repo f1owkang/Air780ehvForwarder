@@ -5,6 +5,9 @@ local libnet = require "libnet"
 local SMTP_TIMEOUT = 10000
 local SMTP_CONNECT_TIMEOUT = 15000
 
+-- 任务名自增序号 (os.time 秒级会撞名: 同秒并发两封邮件会导致 socket/libnet 冲突)
+local smtp_seq = 0
+
 --- 从socket读取SMTP响应
 -- @param netc socket控制对象
 -- @param taskName 任务名称
@@ -88,7 +91,8 @@ function util_smtp.send(rule, msg)
 
     local ssl = rule.smtp_ssl ~= false
     local port = rule.smtp_port or (ssl and 465 or 25)
-    local taskName = "smtp_" .. os.time()
+    smtp_seq = smtp_seq + 1
+    local taskName = "smtp_" .. smtp_seq
 
     log.info("util_smtp", "连接SMTP", rule.smtp_server, port, ssl and "SSL" or "明文")
 

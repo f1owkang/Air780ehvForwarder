@@ -40,6 +40,11 @@ return {
     -- 定时上报间隔, 单位毫秒, 设置为 0 关闭
     REPORT_INTERVAL = 0,
 
+    -- 供电电压监控: 周期读取 VBAT, 低于阈值走备用通知告警 (每小时最多一条)
+    BAT_MONITOR = true,                        -- 设置为 false 关闭
+    BAT_LOW_MV = 3500,                         -- 低电阈值, 毫伏
+    BAT_CHECK_INTERVAL = 600000,               -- 检测间隔, 默认 10 分钟
+
     -- 开机通知 (会消耗流量)
     BOOT_NOTIFY = true,
 

@@ -51,7 +51,11 @@ local function refreshCellInfo(timeout)
         cache.is_req_cell_info_running = true
         mobile.reqCellInfo(timeout or 20) -- 单位: 秒
     end
-    sys.waitUntil("CELL_INFO_UPDATE")
+    -- 带超时兜底: 无网时 CELL_INFO_UPDATE 可能永不发布, 不能让任务永久挂死
+    local got = sys.waitUntil("CELL_INFO_UPDATE", 30000)
+    if not got then
+        log.warn("util_location.refreshCellInfo", "等待 CELL_INFO_UPDATE 超时")
+    end
     cache.is_req_cell_info_running = false
     log.info("util_location.refreshCellInfo", "end")
 end

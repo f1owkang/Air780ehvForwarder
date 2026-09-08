@@ -1,4 +1,6 @@
 
+local util_http = require "util_http"
+
 local function urlencodeTab(params)
     local msg = {}
     for k, v in pairs(params) do

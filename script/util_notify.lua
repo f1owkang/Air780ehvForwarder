@@ -1,4 +1,5 @@
 local util_channel = require "util_channel"
+local util_mobile = require "util_mobile"
 local TaskManager = require "util_task"
 
 local util_notify = {}
@@ -6,11 +7,32 @@ local util_notify = {}
 -- 任务名称常量
 local POLL_TASK_NAME = "util_notify_poll"
 
+-- fskv 断电恢复键前缀 (队列消息持久化)
+local FSKV_KEY_PREFIX = "notify_msg_"
+
 -- 消息队列
 local msg_queue = {}
 -- 发送计数
 local msg_count = 0
 local error_count = 0
+-- 是否已从 fskv 恢复过 (每上电一次)
+local restored = false
+
+--- 默认备用渠道: 自动挑选第一个已配置的渠道, 都没配置时回退 feishu (发不出去也会按失败重试)
+local function defaultChannels()
+    local candidates = {
+        { "feishu", config.FEISHU_WEBHOOK },
+        { "dingtalk", config.DINGTALK_WEBHOOK },
+        { "wecom", config.WECOM_WEBHOOK },
+        { "custom_post", config.CUSTOM_POST_URL },
+    }
+    for _, c in ipairs(candidates) do
+        if type(c[2]) == "string" and c[2] ~= "" then
+            return { c[1] }
+        end
+    end
+    return { "feishu" }
+end
 
 --- 发送通知
 -- @param msg 消息内容
@@ -34,10 +56,11 @@ local function send(msg, channel)
     -- 发送通知
     local code, headers, body = util_channel[channel](msg)
     if code == nil then
-        log.info("util_notify.send", "发送通知失败, 无需重发", "code:", code, "body:", body)
-        return true
+        -- code 为 nil 说明渠道函数自身失败(未配置/内部异常), 按失败处理进入重试, 避免静默丢弃
+        log.error("util_notify.send", "发送通知失败(nil code), 等待重发", "渠道", channel, "body:", body)
+        return false
     end
-    if code >= 200 and code < 500 and code ~= 408 and code ~= 409 and code ~= 425 and code ~= 429 then
+    if code >= 200 and code < 400 and code ~= 408 and code ~= 409 and code ~= 425 and code ~= 429 then
         log.info("util_notify.send", "发送通知成功", "code:", code, "body:", body)
         return true
     end
@@ -63,14 +86,14 @@ function util_notify.add(msg, channels, id)
     log.info("util_notify.add", "处理通知消息", "计数", msg_count, "渠道", channels)
 
     if id == nil or id == "" then
-        id = "msg-t" .. os.time() .. "c" .. msg_count .. "r" .. math.random(9999)
+        id = FSKV_KEY_PREFIX .. "t" .. os.time() .. "c" .. msg_count .. "r" .. math.random(9999)
     end
 
     if type(msg) == "table" then
         msg = table.concat(msg, "\n")
     end
 
-    channels = channels or {"feishu"}  -- 默认使用飞书作为备用通知渠道
+    channels = channels or defaultChannels()
     if type(channels) ~= "table" then
         channels = { channels }
     end
@@ -113,9 +136,12 @@ local function poll()
         msg = msg .. "\n重发次数: " .. error_count
     end
 
-    -- 超过最大重发次数
+    -- 超过最大重发次数: 放弃并清理 fskv 键, 避免孤儿键长期堆积
     if item.retry > (config.NOTIFY_RETRY_MAX or 20) then
         log.warn("util_notify.poll", "超过最大重发次数, 放弃重发", item.msg)
+        if fskv.get(item.id) then
+            fskv.del(item.id)
+        end
         return
     end
 
@@ -174,13 +200,54 @@ local function poll()
             log.info("util_notify.poll", "fskv 已存在, 跳过写入", item.id)
             return
         end
-        local kv_set_result = fskv.set(item.id, item.msg)
+        -- json 结构带渠道信息; 旧版本固件写入的纯文本值在恢复时按默认渠道处理
+        local kv_set_result = fskv.set(item.id, json.encode({ channel = item.channel, msg = item.msg }))
         log.info("util_notify.poll", "fskv.set", kv_set_result, "used,total,count:", fskv.status())
+    end
+end
+
+--- 启动时从 fskv 恢复断电前未发完的队列消息 (每上电执行一次)
+local function restoreFromFskv()
+    if restored then
+        return
+    end
+    restored = true
+    local iter = fskv.iter and fskv.iter()
+    if not iter then
+        log.warn("util_notify", "当前固件 fskv 不支持遍历, 跳过断电恢复")
+        return
+    end
+    local count = 0
+    local key, value = iter()
+    while key do
+        -- 兼容旧版 "msg-t" 前缀的遗留键
+        if type(key) == "string" and (key:sub(1, #FSKV_KEY_PREFIX) == FSKV_KEY_PREFIX or key:sub(1, 5) == "msg-t") then
+            local channel, msg = defaultChannels()[1], value
+            local ok, data = pcall(json.decode, value)
+            if ok and type(data) == "table" and type(data.channel) == "string" and type(data.msg) == "string" then
+                channel, msg = data.channel, data.msg
+            end
+            if util_channel[channel] and type(msg) == "string" and msg ~= "" then
+                table.insert(msg_queue, { id = key, channel = channel, msg = msg, retry = 1 })
+                count = count + 1
+                log.info("util_notify", "恢复队列消息", key, "渠道", channel)
+            else
+                -- 渠道已失效或内容异常, 清掉孤儿键
+                log.warn("util_notify", "丢弃无效持久化消息", key)
+                fskv.del(key)
+            end
+        end
+        key, value = iter()
+    end
+    if count > 0 then
+        log.info("util_notify", "断电恢复完成", "共", count, "条")
+        sys.publish("NEW_MSG")
     end
 end
 
 -- 启动消息轮询任务
 function util_notify.startPoll()
+    restoreFromFskv()
     TaskManager.createLoop(POLL_TASK_NAME, function()
         poll()
     end, 100, function(success, err)

@@ -1,11 +1,23 @@
 local util_notify = require "util_notify"
 local util_http = require "util_http"
 local util_smtp = require "util_smtp"
+local util_mobile = require "util_mobile"
 
 local util_forward = {}
 
 -- 转发规则配置 (统一在 config.lua 的 FORWARD_RULES 段)
 local forward_rules = config.FORWARD_RULES or {}
+
+-- 规则匹配条件的日志描述
+local function matchDesc(rule)
+    if rule.regular then
+        return "正则:" .. rule.regular
+    elseif rule.keyword then
+        return "关键词:" .. rule.keyword
+    else
+        return "无匹配条件(匹配所有)"
+    end
+end
 
 -- 初始化转发规则
 local function initForwardRules()
@@ -13,15 +25,7 @@ local function initForwardRules()
 
     -- 打印所有规则用于调试
     for i, rule in ipairs(forward_rules) do
-        local match_desc
-        if rule.regular then
-            match_desc = "正则:" .. rule.regular
-        elseif rule.keyword then
-            match_desc = "关键词:" .. rule.keyword
-        else
-            match_desc = "无匹配条件(匹配所有)"
-        end
-        log.info("util_forward", "规则" .. i, "渠道", rule.channel, match_desc, "webhook", rule.webhook and "已配置" or "未配置")
+        log.info("util_forward", "规则" .. i, "渠道", rule.channel, matchDesc(rule), "webhook", rule.webhook and "已配置" or "未配置")
     end
 
     return true
@@ -73,6 +77,15 @@ local function sendToWeCom(msg, webhook)
     log.info("util_forward", "发送到企业微信", "webhook", webhook)
     local code, headers, response = util_http.fetch(nil, "POST", webhook, header, json.encode(body))
 
+    -- 企业微信 200 但 errcode 非 0 也算失败 (系统繁忙 -1 / 接口限流 45009)
+    if code == 200 and type(response) == "string" and response ~= "" then
+        local ok, data = pcall(json.decode, response)
+        if ok and type(data) == "table" and (data.errcode == -1 or data.errcode == 45009) then
+            log.error("util_forward", "企业微信发送失败(errcode)", data.errcode, response)
+            return false
+        end
+    end
+
     if code and code >= 200 and code < 300 then
         log.info("util_forward", "企业微信发送成功", "状态码", code)
         return true
@@ -82,7 +95,7 @@ local function sendToWeCom(msg, webhook)
     end
 end
 
--- 飞书转发函数（简化版，无签名验证）
+-- 飞书转发函数（支持加签，与备用通知渠道能力对齐）
 local function sendToFeishu(msg, webhook, secret)
     if not webhook or webhook == "" then
         log.error("util_forward", "飞书webhook为空")
@@ -92,7 +105,15 @@ local function sendToFeishu(msg, webhook, secret)
     local header = { ["Content-Type"] = "application/json; charset=utf-8" }
     local body = { msg_type = "text", content = { text = msg } }
 
-    log.info("util_forward", "发送到飞书（无签名模式）", "webhook", webhook)
+    -- 如果配置了密钥，需要签名（与 util_channel.feishu 同一套算法）
+    if secret and secret ~= "" then
+        local timestamp = tostring(os.time())
+        local string_to_sign = timestamp .. "\n" .. secret
+        body.timestamp = timestamp
+        body.sign = crypto.hmac_sha256(string_to_sign, secret):fromHex():toBase64():urlEncode()
+    end
+
+    log.info("util_forward", "发送到飞书", "webhook", webhook)
     local code, headers, response = util_http.fetch(nil, "POST", webhook, header, json.encode(body))
 
     if code and code >= 200 and code < 300 then
@@ -125,6 +146,23 @@ local function sendToDingding(msg, webhook, secret)
 
     log.info("util_forward", "发送到钉钉", "url", url)
     local code, headers, response = util_http.fetch(nil, "POST", url, header, json.encode(body))
+
+    -- 钉钉 200 但 errcode 非 0 也算失败: 限流 -1/410100、时间戳过期 310000 (与 util_channel 对齐)
+    if code == 200 and type(response) == "string" and response ~= "" then
+        local ok, data = pcall(json.decode, response)
+        if ok and type(data) == "table" then
+            local errcode = data.errcode or 0
+            if errcode == -1 or errcode == 410100 then
+                log.error("util_forward", "钉钉发送失败(限流)", errcode, response)
+                return false
+            end
+            if errcode == 310000 and data.errmsg and (data.errmsg:find("timestamp") or data.errmsg:find("过期")) then
+                socket.sntp()
+                log.error("util_forward", "钉钉发送失败(时间戳过期)", response)
+                return false
+            end
+        end
+    end
 
     if code and code >= 200 and code < 300 then
         log.info("util_forward", "钉钉发送成功", "状态码", code)
@@ -194,12 +232,19 @@ local function sendByChannel(msg, channel, rule)
     elseif channel == "email" then
         success = util_smtp.send(rule, msg)
     elseif channel == "qq" then
-        -- 引用全局 util_qqbot (运行时已加载), 避免 require 循环依赖
-        if util_qqbot and util_qqbot.pushToUser then
+        -- util_qqbot 顶层 require 了本模块, 存在循环依赖, 这里在运行期惰性加载
+        local qqbot = util_qqbot
+        if not qqbot then
+            local ok, mod = pcall(require, "util_qqbot")
+            if ok then
+                qqbot = mod
+            end
+        end
+        if qqbot and qqbot.pushToUser then
             if rule.group_openid and rule.group_openid ~= "" then
-                success = util_qqbot.pushToGroup(rule.group_openid, msg)
+                success = qqbot.pushToGroup(rule.group_openid, msg)
             elseif rule.openid and rule.openid ~= "" then
-                success = util_qqbot.pushToUser(rule.openid, msg)
+                success = qqbot.pushToUser(rule.openid, msg)
             else
                 log.error("util_forward", "qq 渠道缺少 openid 或 group_openid 字段")
                 success = false
@@ -216,6 +261,41 @@ local function sendByChannel(msg, channel, rule)
     return success
 end
 
+-- 匹配所有规则并记录日志, 返回命中的规则表
+local function matchRules(msg)
+    local matched_rules = {}
+    for i, rule in ipairs(forward_rules) do
+        if matchRule(msg, rule) then
+            table.insert(matched_rules, rule)
+            log.info("util_forward", "匹配到规则", "索引", i, "渠道", rule.channel, matchDesc(rule))
+        end
+    end
+    return matched_rules
+end
+
+-- 对命中的规则逐个异步转发 (1 秒限速), 在 taskInit 协程中调用
+local function dispatchRules(content, matched_rules)
+    sys.taskInit(function()
+        local success_count = 0
+        for i, rule in ipairs(matched_rules) do
+            log.info("util_forward", "执行转发规则", i .. "/" .. #matched_rules, "渠道", rule.channel)
+
+            if sendByChannel(content, rule.channel, rule) then
+                success_count = success_count + 1
+                log.info("util_forward", "转发成功", "渠道", rule.channel)
+            else
+                log.error("util_forward", "转发失败", "渠道", rule.channel)
+            end
+
+            -- 避免请求过于频繁
+            if i < #matched_rules then
+                sys.wait(1000)
+            end
+        end
+        log.info("util_forward", "转发完成", "成功", success_count, "总计", #matched_rules)
+    end)
+end
+
 --- 通用消息转发函数（异步版本）
 -- @param msg 消息内容
 -- @param msg_type 消息类型 (可选)
@@ -227,54 +307,14 @@ function util_forward.forwardMessage(msg, msg_type)
 
     log.info("util_forward", "开始转发消息", "类型", msg_type or "未知", "内容", msg)
 
-    local matched_rules = {}
-
-    -- 循环匹配所有规则
-    for i, rule in ipairs(forward_rules) do
-        if matchRule(msg, rule) then
-            table.insert(matched_rules, rule)
-            local match_desc
-            if rule.regular then
-                match_desc = "正则:" .. rule.regular
-            elseif rule.keyword then
-                match_desc = "关键词:" .. rule.keyword
-            else
-                match_desc = "匹配所有"
-            end
-            log.info("util_forward", "匹配到规则", "索引", i, "渠道", rule.channel, match_desc)
-        end
-    end
-
+    local matched_rules = matchRules(msg)
     if #matched_rules == 0 then
         log.warn("util_forward", "没有匹配到任何转发规则")
         return false
     end
 
     log.info("util_forward", "匹配到规则数量", #matched_rules)
-
-    -- 启动异步任务执行转发
-    sys.taskInit(function()
-        local success_count = 0
-        for i, rule in ipairs(matched_rules) do
-            log.info("util_forward", "执行转发规则", i .. "/" .. #matched_rules, "渠道", rule.channel)
-
-            local success = sendByChannel(msg, rule.channel, rule)
-            if success then
-                success_count = success_count + 1
-                log.info("util_forward", "转发成功", "渠道", rule.channel)
-            else
-                log.error("util_forward", "转发失败", "渠道", rule.channel)
-            end
-
-            -- 避免请求过于频繁
-            if i < #matched_rules then
-                sys.wait(1000)  -- 等待1秒
-            end
-        end
-
-        log.info("util_forward", "转发完成", "成功", success_count, "总计", #matched_rules)
-    end)
-
+    dispatchRules(msg, matched_rules)
     return true  -- 表示任务已启动
 end
 
@@ -300,53 +340,14 @@ function util_forward.forwardSms(msg, sender_number, time)
         content = content .. util_mobile.appendDeviceInfo()
     end
 
-    local matched_rules = {}
-
-    -- 循环匹配所有规则
-    for i, rule in ipairs(forward_rules) do
-        if matchRule(msg, rule) then
-            table.insert(matched_rules, rule)
-            local match_desc
-            if rule.regular then
-                match_desc = "正则:" .. rule.regular
-            elseif rule.keyword then
-                match_desc = "关键词:" .. rule.keyword
-            else
-                match_desc = "匹配所有"
-            end
-            log.info("util_forward", "匹配到规则", "索引", i, "渠道", rule.channel, match_desc)
-        end
-    end
-
+    local matched_rules = matchRules(msg)
     if #matched_rules == 0 then
         log.warn("util_forward", "没有匹配到任何转发规则")
         return
     end
 
     log.info("util_forward", "匹配到规则数量", #matched_rules)
-
-    -- 启动异步任务执行转发
-    sys.taskInit(function()
-        local success_count = 0
-        for i, rule in ipairs(matched_rules) do
-            log.info("util_forward", "执行转发规则", i .. "/" .. #matched_rules, "渠道", rule.channel)
-
-            local success = sendByChannel(content, rule.channel, rule)
-            if success then
-                success_count = success_count + 1
-                log.info("util_forward", "转发成功", "渠道", rule.channel)
-            else
-                log.error("util_forward", "转发失败", "渠道", rule.channel)
-            end
-
-            -- 避免请求过于频繁
-            if i < #matched_rules then
-                sys.wait(1000)  -- 等待1秒
-            end
-        end
-
-        log.info("util_forward", "转发完成", "成功", success_count, "总计", #matched_rules)
-    end)
+    dispatchRules(content, matched_rules)
 end
 
 --- 重新加载转发规则
