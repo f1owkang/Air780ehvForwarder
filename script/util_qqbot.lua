@@ -220,7 +220,7 @@ local function fetchGateway()
 end
 
 --- 发送消息 (被动/主动通用): markdown -> 按钮键盘逐级降级 (md+按钮 -> 纯md -> 纯文本), 失败自动记住
-local function postMessage(path, content, msg_id, seq, keyboard)
+local function postMessage(path, content, msg_id, seq, keyboard, event_id)
     local function trySend(with_md, with_kb, text)
         text = text or content
         local b = {}
@@ -237,6 +237,8 @@ local function postMessage(path, content, msg_id, seq, keyboard)
         if msg_id then
             b.msg_id = msg_id
             b.msg_seq = seq or 1
+        elseif event_id then
+            b.event_id = event_id
         end
         local code, resp = qqApi("POST", path, b)
         local ok = type(code) == "number" and code >= 200 and code < 300
@@ -795,16 +797,9 @@ local function replyGroup(group_openid, msg_id, seq, content, keyboard)
     return ok
 end
 
---- 非白名单用户回复欢迎引导消息 (含其 openid 与配置方法), 每个 openid 最多 WELCOME_MAX 次防刷
-local function replyWelcome(openid, msg_id, is_group, group_openid)
-    local count = welcome_count[openid] or 0
-    if count >= WELCOME_MAX then
-        log.warn("util_qqbot", "欢迎消息次数用尽, 忽略", "openid", openid, "已回复", count)
-        return
-    end
-    welcome_count[openid] = count + 1
-
-    local content = table.concat({
+--- 欢迎引导文案 (含 openid 与配置方法)
+local function buildWelcomeText(openid)
+    return table.concat({
         "👋 " .. mdBold("欢迎使用 Air780EHV 短信转发器"),
         "",
         "你的 openid：" .. mdCode(openid),
@@ -814,11 +809,63 @@ local function replyWelcome(openid, msg_id, is_group, group_openid)
         "• 填入：" .. mdCode('QQBOT_ALLOW = { "' .. openid .. '" }'),
         "• 重新烧录后发送 \"帮助\" 查看全部指令",
     }, "\n")
+end
 
+--- 非白名单用户回复欢迎引导消息, 每个 openid 最多 WELCOME_MAX 次防刷
+local function replyWelcome(openid, msg_id, is_group, group_openid)
+    local count = welcome_count[openid] or 0
+    if count >= WELCOME_MAX then
+        log.warn("util_qqbot", "欢迎消息次数用尽, 忽略", "openid", openid, "已回复", count)
+        return
+    end
+    welcome_count[openid] = count + 1
+
+    local content = buildWelcomeText(openid)
     if is_group then
         replyGroup(group_openid, msg_id, 1, content)
     else
         replyC2C(openid, msg_id, 1, content)
+    end
+end
+
+--- 生命周期事件: 新好友欢迎私信 / 机器人进群问候 / 退群记录 (在独立协程中执行)
+local function processLifecycleEvent(t, d)
+    if t == "FRIEND_ADD" then
+        local openid = d.openid
+        log.info("util_qqbot", "新好友添加", "openid", openid)
+        if type(openid) ~= "string" or openid == "" then
+            return
+        end
+        -- 复用欢迎额度防刷
+        local count = welcome_count[openid] or 0
+        if count >= WELCOME_MAX then
+            return
+        end
+        welcome_count[openid] = count + 1
+        util_qqbot.pushToUser(openid, buildWelcomeText(openid))
+
+    elseif t == "GROUP_ADD_ROBOT" then
+        local group_openid, event_id = d.group_openid, d.id
+        log.info("util_qqbot", "机器人被添加到群", group_openid)
+        if type(group_openid) ~= "string" or group_openid == "" then
+            return
+        end
+        local text = table.concat({
+            "👋 " .. mdBold("感谢添加，我是短信转发机器人"),
+            "",
+            "- 我会把设备收到的短信转发到 QQ",
+            "- 在群里 @我 + 指令 即可操作（需设备管理员将你的 openid 加入 QQBOT_ALLOW 白名单）",
+            "- 发送 \"帮助\" 查看全部指令",
+        }, "\n")
+        -- 进群事件支持 event_id 被动回复, 无 event_id 时退回主动推送
+        if event_id then
+            postMessage("/v2/groups/" .. group_openid .. "/messages", text, nil, nil, nil, event_id)
+        else
+            util_qqbot.pushToGroup(group_openid, text)
+        end
+
+    elseif t == "GROUP_DEL_ROBOT" then
+        log.info("util_qqbot", "机器人被移出群", d.group_openid)
     end
 end
 
@@ -933,6 +980,15 @@ local function handleWsMessage(text)
                 local ok2, err = pcall(processMessage, t, d)
                 if not ok2 then
                     log.error("util_qqbot", "消息处理异常", err)
+                end
+            end)
+        elseif t == "FRIEND_ADD" or t == "GROUP_ADD_ROBOT" or t == "GROUP_DEL_ROBOT" then
+            -- 生命周期事件同样派生协程处理
+            local d = msg.d or {}
+            sys.taskInit(function()
+                local ok2, err = pcall(processLifecycleEvent, t, d)
+                if not ok2 then
+                    log.error("util_qqbot", "生命周期事件处理异常", err)
                 end
             end)
         else

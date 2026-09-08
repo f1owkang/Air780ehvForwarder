@@ -34,7 +34,7 @@
 - `util_smtp.lua` — SMTP 邮件（AUTH LOGIN，SSL 465 / 明文 25，正文 base64）。
 - `util_http.lua` — 对 `http.request` 的统一封装 `fetch(timeout, method, url, headers, body)`，所有 HTTP 必须走它（会联动网络 LED 和 GC）。
 - `util_mobile.lua` — 本机号码/IMEI/IMSI/ICCID/运营商/信号（RSRP+CSQ）/流量查询短信/PIN 验证/`appendDeviceInfo()`。
-- `util_qqbot.lua` — Qbot 通道（设备直连，API v2 wss 网关协议：token 鉴权、IDENTIFY/RESUME、心跳、指数退避重连、openid 白名单、非白名单欢迎引导（含 openid 与配置方法，每 openid 上限 3 次）、表驱动指令系统（别名/全角归一//前缀/危险指令二次确认）、被动回复）。交互走被动回复；短信通知可经转发规则 `qq` 渠道主动推送（`pushToUser`/`pushToGroup`，仅需 token，不依赖 wss 连接，频控每好友/群 1000 条/天）。配置在 `config.lua` 的 `QQBOT_*` 键。REST 请求强制域名白名单 + URL 校验（http/https、拒绝 IP 字面量/userinfo/显式端口），新增外发请求必须走同样的校验。
+- `util_qqbot.lua` — Qbot 通道（设备直连，API v2 wss 网关协议：token 鉴权、IDENTIFY/RESUME、心跳、指数退避重连、openid 白名单、非白名单欢迎引导（含 openid 与配置方法，每 openid 上限 3 次）、生命周期事件（好友欢迎/进群问候）、表驱动指令系统（别名/全角归一//前缀/危险指令二次确认）、被动回复、原生菜单同步）。交互走被动回复；短信通知可经转发规则 `qq` 渠道主动推送（`pushToUser`/`pushToGroup`，仅需 token，不依赖 wss 连接，频控每好友/群 1000 条/天）。配置在 `config.lua` 的 `QQBOT_*` 键。REST 请求强制域名白名单 + URL 校验（http/https、拒绝 IP 字面量/userinfo/显式端口），新增外发请求必须走同样的校验。
 - `util_sms_store.lua` — fskv 持久化的最近短信环形缓存（20 条），main.lua 短信回调写入，Qbot `短信` 指令读取。
 - `util_location.lua` — 基站定位；`util_netled.lua` — 网络状态 LED；`util_task.lua` — 命名任务管理（pcall 包裹、`createLoop`、重启前 `cleanupAllTasks()` 会用到）。
 - README.md 是面向用户的配置说明，`docs/CHANGELOG.md` 记录版本。
