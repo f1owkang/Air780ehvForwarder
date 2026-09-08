@@ -62,7 +62,6 @@ return {
     NETWORK_TIMEOUT_DEFAULT = 1000 * 60,      -- 默认1分钟
     NETWORK_TIMEOUT_LONG = 1000 * 60 * 5,     -- 长超时5分钟
     NETWORK_TIMEOUT_SHORT = 1000 * 10,        -- 短超时10秒
-    NETWORK_TIMEOUT_LOCATION = 1000 * 30,     -- 定位服务30秒
 
     -- 网络恢复配置
     FLYMODE_THRESHOLD = 4,                     -- 连续失败多少次才开启飞行模式
