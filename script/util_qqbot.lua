@@ -445,40 +445,36 @@ local function normalizeInput(raw)
     return s
 end
 
---- 综合状态卡片: 合并原 信号/设备/定位/时间 指令, 一屏全览
+--- 综合状态卡片: 合并原 信号/设备/定位/时间 指令, 一屏全览 (加粗标签排版, 不用装饰 emoji)
 local function buildStatus()
-    local lines = { "📊 " .. mdBold("设备状态"), "" }
+    local lines = { mdBold("设备状态"), "" }
 
     -- 信号
     local rsrp, csq = mobile.rsrp(), mobile.csq()
     if rsrp and rsrp ~= 0 then
         local grade = (rsrp >= -80 and "优") or (rsrp >= -90 and "良") or (rsrp >= -100 and "一般") or "差"
-        local sig = "- 📶 信号：" .. rsrp .. " dBm（" .. grade .. "）"
+        local sig = mdBold("信号") .. "　" .. rsrp .. " dBm（" .. grade .. "）"
         if csq and csq >= 0 and csq <= 31 then
             sig = sig .. " · CSQ " .. csq
         end
         lines[#lines + 1] = sig
     else
-        lines[#lines + 1] = "- 📶 信号：获取失败"
+        lines[#lines + 1] = mdBold("信号") .. "　获取失败"
     end
 
     -- 网络
     local oper = util_mobile.getOper(true)
-    lines[#lines + 1] = "- 📡 网络：" .. util_mobile.status() .. " · " .. (oper ~= "" and oper or "未知运营商")
+    lines[#lines + 1] = mdBold("网络") .. "　" .. util_mobile.status() .. " · " .. (oper ~= "" and oper or "未知运营商")
 
     -- 时间与开机时长
     local synced = os.time() > 1714500000
     local sec = math.floor(mcu.ticks() / 1000)
-    lines[#lines + 1] = "- 🕐 时间：" .. os.date("%Y-%m-%d %H:%M:%S") .. (synced and "（已同步）" or "（未同步）")
+    lines[#lines + 1] = mdBold("时间") .. "　" .. os.date("%Y-%m-%d %H:%M:%S") .. (synced and "（已同步）" or "（未同步）")
         .. " · 开机 " .. string.format("%02d:%02d:%02d", math.floor(sec / 3600), math.floor((sec % 3600) / 60), sec % 60)
 
     -- 定位 (后台周期刷新的缓存)
     local _, _, map_link = util_location.get()
-    if map_link ~= "" then
-        lines[#lines + 1] = "- 📍 定位：" .. mdLink("查看地图", map_link)
-    else
-        lines[#lines + 1] = "- 📍 定位：暂无（后台刷新中）"
-    end
+    lines[#lines + 1] = mdBold("定位") .. "　" .. (map_link ~= "" and mdLink("查看地图", map_link) or "暂无（后台刷新中）")
 
     -- 设备标识 (打码展示)
     local ids = util_mobile.getDeviceIdentifiers()
@@ -487,12 +483,12 @@ local function buildStatus()
     if not number or number == "" then
         number = config.FALLBACK_LOCAL_NUMBER ~= "" and config.FALLBACK_LOCAL_NUMBER or nil
     end
-    lines[#lines + 1] = "- 📱 设备：IMEI " .. imei .. " · 本机 " .. (number and maskNumber(number) or "未知")
+    lines[#lines + 1] = mdBold("设备") .. "　IMEI " .. imei .. " · 本机 " .. (number and maskNumber(number) or "未知")
 
     -- 运行概况
-    lines[#lines + 1] = "- 🧠 运行：内存 " .. string.format("%.1f", collectgarbage("count")) .. " KB"
+    lines[#lines + 1] = mdBold("运行") .. "　内存 " .. string.format("%.1f", collectgarbage("count")) .. " KB"
         .. " · 规则 " .. #(util_forward.getRules() or {}) .. " 条 · 短信缓存 " .. util_sms_store.count() .. " 条"
-    lines[#lines + 1] = "- 🔌 Qbot：" .. state
+    lines[#lines + 1] = mdBold("Qbot") .. "　" .. state
 
     return table.concat(lines, "\n")
 end
@@ -501,9 +497,9 @@ end
 local function buildRulesList()
     local rules = util_forward.getRules() or {}
     if #rules == 0 then
-        return "📭 未配置转发规则（config.lua 第 4 节 FORWARD_RULES）"
+        return "未配置转发规则（config.lua 第 4 节 FORWARD_RULES）"
     end
-    local lines = { "📋 " .. mdBold("转发规则") .. "（" .. #rules .. " 条）" }
+    local lines = { mdBold("转发规则") .. "（" .. #rules .. " 条）" }
     for i, r in ipairs(rules) do
         local match_desc = r.regular and ("正则:" .. r.regular)
             or (r.keyword and ("关键词:" .. r.keyword) or "全部")
@@ -549,7 +545,7 @@ end
 
 local function cmdTraffic()
     util_mobile.queryTraffic()
-    return "📨 已向运营商发送流量查询短信，回复将以短信到达并按规则转发"
+    return "已向运营商发送流量查询短信，回复将以短信到达并按规则转发"
 end
 
 local function cmdFlymode()
@@ -558,7 +554,7 @@ local function cmdFlymode()
     sys.wait(3000)
     mobile.flymode(0, false)
     sys.waitUntil("IP_READY", config.NETWORK_TIMEOUT_DEFAULT)
-    return "✅ 飞行模式已执行一次，网络状态：" .. util_mobile.status() .. "\nℹ️ Qbot 通道将自动重连"
+    return "✅ 飞行模式已执行一次，网络状态：" .. util_mobile.status() .. "\nQbot 通道将自动重连"
 end
 
 --- 构建按钮键盘: entries 为字符串或 { label, style } (style: 0=灰色线框, 1=蓝色线框), 每行最多 4 个
@@ -578,7 +574,9 @@ local function buildKeyboard(openid, entries)
             render_data = { label = label, visited_label = label .. " ✓", style = style },
             action = {
                 type = 2,
-                permission = { type = 0, user_list = { openid } },
+                -- type=2 所有人可点: type=0 指定用户在部分客户端会误报"无权限操作";
+                -- 按钮仅代发指令文本, 真正的权限由指令层 openid 白名单把关
+                permission = { type = 2 },
                 data = label,
                 enter = true,
             },
@@ -615,7 +613,7 @@ local function cmdConfirm(arg, ctx)
     local p = pending_confirm[ctx.openid]
     pending_confirm[ctx.openid] = nil
     if not p or mcu.ticks() > p.expire then
-        return "ℹ️ 没有待确认的操作"
+        return "没有待确认的操作"
     end
     if p.action == "reboot" then
         -- 先回复再重启, 让回复来得及发出
@@ -629,16 +627,16 @@ local function cmdConfirm(arg, ctx)
         end, 3000)
         return "✅ 已确认，设备 3 秒后重启…"
     end
-    return "ℹ️ 未知操作"
+    return "未知操作"
 end
 
 local function cmdCancel(arg, ctx)
     local p = pending_confirm[ctx.openid]
     pending_confirm[ctx.openid] = nil
     if p then
-        return "✗ 已取消"
+        return "已取消"
     end
-    return "ℹ️ 没有待确认的操作"
+    return "没有待确认的操作"
 end
 
 local buildHelp                 -- 前向声明, 由 COMMANDS 自动生成
@@ -681,34 +679,33 @@ end
 
 buildHelp = function()
     local groups = {
-        { icon = "🔍", name = "查询", items = {
+        { name = "查询", items = {
             { "状态", "信号/网络/定位/设备/内存一屏全览" },
             { "规则", "转发规则列表（目标打码）" },
             { "流量", "发短信查询流量" },
         } },
-        { icon = "📨", name = "短信", items = {
+        { name = "短信", items = {
             { "短信 [N]", "最近短信，默认 5 条" },
             { "发短信 号码 内容", "设备代发短信" },
             { "测试", "触发一次测试转发" },
         } },
-        { icon = "⚙️", name = "控制", items = {
+        { name = "控制", items = {
             { "重载规则", "重载转发配置" },
             { "飞行模式", "开关一次（网络自愈）" },
             { "重启", "需二次确认，可取消" },
         } },
     }
-    local lines = { "📋 " .. mdBold("指令菜单") }
+    local lines = { mdBold("指令菜单") }
     for _, g in ipairs(groups) do
         lines[#lines + 1] = ""
-        lines[#lines + 1] = g.icon .. " " .. mdBold(g.name)
+        lines[#lines + 1] = mdBold(g.name)
         lines[#lines + 1] = ""  -- 列表前必须空行, 否则 QQ 客户端不渲染列表
         for _, it in ipairs(g.items) do
-            lines[#lines + 1] = "- " .. mdBold(it[1]) .. " — " .. it[2]
+            lines[#lines + 1] = "- " .. it[1] .. " — " .. it[2]
         end
     end
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "> 💡 支持 / 前缀 · 只 @机器人 打开本菜单"
-    lines[#lines + 1] = '> ⚠️ 危险操作需二次确认，发送 "取消" 可撤销'
+    lines[#lines + 1] = "> 支持 / 前缀 · 只 @机器人 打开本菜单 · 危险操作需二次确认"
     return table.concat(lines, "\n")
 end
 
@@ -754,7 +751,7 @@ local function handleCommand(raw, ctx)
             suggest[#suggest + 1] = k
         end
     end
-    local head = "❓ 未知指令：" .. cmd
+    local head = "未知指令：" .. cmd
     if #suggest > 0 then
         table.sort(suggest)
         if #suggest > 4 then
@@ -800,7 +797,7 @@ end
 --- 欢迎引导文案 (含 openid 与配置方法)
 local function buildWelcomeText(openid)
     return table.concat({
-        "👋 " .. mdBold("欢迎使用 Air780EHV 短信转发器"),
+        mdBold("欢迎使用 Air780EHV 短信转发器"),
         "",
         "你的 openid：" .. mdCode(openid),
         "",
@@ -851,7 +848,7 @@ local function processLifecycleEvent(t, d)
             return
         end
         local text = table.concat({
-            "👋 " .. mdBold("感谢添加，我是短信转发机器人"),
+            mdBold("感谢添加，我是短信转发机器人"),
             "",
             "- 我会把设备收到的短信转发到 QQ",
             "- 在群里 @我 + 指令 即可操作（需设备管理员将你的 openid 加入 QQBOT_ALLOW 白名单）",

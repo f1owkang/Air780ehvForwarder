@@ -105,7 +105,7 @@ end
 function util_sms_store.recentText(n)
     local list = util_sms_store.recent(n)
     if #list == 0 then
-        return "📭 暂无短信记录"
+        return "暂无短信记录"
     end
     local parts = {}
     for i, item in ipairs(list) do
