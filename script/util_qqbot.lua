@@ -16,7 +16,7 @@ local util_qqbot = {}
 local INTENTS_GROUP_C2C = 33554432
 
 -- 非白名单用户欢迎消息的每 openid 回复上限 (防刷)
-local WELCOME_MAX = 5
+local WELCOME_MAX = 3
 
 -- REST 接口允许访问的域名白名单
 local REST_HOSTS = {

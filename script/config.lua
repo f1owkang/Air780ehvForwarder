@@ -78,7 +78,7 @@ return {
     QQBOT_MARKDOWN = false,
 
     -- 允许下指令的 QQ openid 白名单 (防止他人操控设备)
-    -- 未配置的用户发消息会收到欢迎回复(含其 openid 与配置方法), 每个 openid 最多 5 次
+    -- 未配置的用户发消息会收到欢迎回复(含其 openid 与配置方法), 每个 openid 最多 3 次
     QQBOT_ALLOW = {
         -- "你的openid",
     },
