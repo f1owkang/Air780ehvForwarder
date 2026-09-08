@@ -77,8 +77,9 @@ end
 --- 通过SMTP发送邮件
 -- @param rule 转发规则(含SMTP配置)
 -- @param msg 消息内容
+-- @param taskName 任务名 (必须与运行本函数的协程名一致, libnet 按任务名投递 socket 消息)
 -- @return true成功, false失败
-function util_smtp.send(rule, msg)
+local function smtpSendInternal(rule, msg, taskName)
     -- 回收内存
     collectgarbage("collect")
 
@@ -91,8 +92,6 @@ function util_smtp.send(rule, msg)
 
     local ssl = rule.smtp_ssl ~= false
     local port = rule.smtp_port or (ssl and 465 or 25)
-    smtp_seq = smtp_seq + 1
-    local taskName = "smtp_" .. smtp_seq
 
     log.info("util_smtp", "连接SMTP", rule.smtp_server, port, ssl and "SSL" or "明文")
 
@@ -170,6 +169,34 @@ function util_smtp.send(rule, msg)
 
     collectgarbage("collect")
     return true
+end
+
+--- 通过SMTP发送邮件
+-- libnet 依赖 waitMsg, 必须用 sysplus.taskInitEx 创建与 taskName 同名的协程,
+-- 普通 sys.taskInit 协程里调用会报 "taskInitEx启动的task才能使用waitMsg"
+-- @param rule 转发规则(含SMTP配置)
+-- @param msg 消息内容
+-- @return true成功, false失败
+function util_smtp.send(rule, msg)
+    smtp_seq = smtp_seq + 1
+    local taskName = "smtp_" .. smtp_seq
+    local event = "SMTP_DONE_" .. taskName
+
+    sysplus.taskInitEx(function()
+        local ok, res = pcall(smtpSendInternal, rule, msg, taskName)
+        if not ok then
+            log.error("util_smtp", "发送协程异常", res)
+        end
+        -- 通知调用方协程取结果
+        sys.publish(event, ok and res == true)
+    end, taskName, function(err)
+        log.error("util_smtp", "任务创建失败", err)
+        sys.publish(event, false)
+    end)
+
+    -- 调用方在哪个协程都行, sys.waitUntil 普通协程可用; 90 秒兜底防挂死
+    local _, result = sys.waitUntil(event, 90000)
+    return result == true
 end
 
 return util_smtp

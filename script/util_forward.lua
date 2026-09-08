@@ -2,8 +2,12 @@ local util_notify = require "util_notify"
 local util_http = require "util_http"
 local util_smtp = require "util_smtp"
 local util_mobile = require "util_mobile"
+local TaskManager = require "util_task"
 
 local util_forward = {}
+
+-- 转发任务序号 (TaskManager 任务名唯一)
+local forward_seq = 0
 
 -- 转发规则配置 (统一在 config.lua 的 FORWARD_RULES 段)
 local forward_rules = config.FORWARD_RULES or {}
@@ -273,9 +277,12 @@ local function matchRules(msg)
     return matched_rules
 end
 
--- 对命中的规则逐个异步转发 (1 秒限速), 在 taskInit 协程中调用
+-- 对命中的规则逐个异步转发 (1 秒限速)
+-- 注意: 必须用 sysplus.taskInitEx 创建的协程 (TaskManager.create),
+-- libnet(SMTP 渠道) 的 waitMsg 在普通 sys.taskInit 协程里会报 "taskInitEx启动的task才能使用waitMsg"
 local function dispatchRules(content, matched_rules)
-    sys.taskInit(function()
+    forward_seq = forward_seq + 1
+    TaskManager.create("forward_" .. forward_seq, function()
         local success_count = 0
         for i, rule in ipairs(matched_rules) do
             log.info("util_forward", "执行转发规则", i .. "/" .. #matched_rules, "渠道", rule.channel)
