@@ -38,7 +38,9 @@ end
 -- @return true if matches
 local function checkCode(resp, expected)
     if not resp then return false end
-    return tonumber(resp:match("^(%d+)")) == expected
+    local code = resp:match("^(%d+)")
+    if not code then return false end
+    return tonumber(code) == expected
 end
 
 --- 构建邮件内容(含邮件头)
