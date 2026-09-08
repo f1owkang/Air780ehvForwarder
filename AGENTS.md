@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-基于 LuatOS 的短信转发器固件（纯 Lua，无构建系统、无 git、无测试框架）。接收短信后按 `config.lua` 中 `FORWARD_RULES` 的规则匹配（关键词或 Lua pattern），转发到企业微信/飞书/钉钉/自定义 webhook/邮件/QQ 等渠道。**全部源码位于 `script/` 目录**（Luatools 烧录时直接选择该文件夹）；文档统一在 `docs/`（CHANGELOG、硬件手册、设计文档），根目录仅保留 README / AGENTS / LICENSE。
+基于 LuatOS 的短信转发器固件（纯 Lua，无构建系统、无自动化测试，验证只能真机烧录看串口日志）。git 仓库托管于 [f1owkang/Air780ehvForwarder](https://github.com/f1owkang/Air780ehvForwarder)（main 分支），**提交必须 GPG 签名**（密钥在智能卡上，`gpg.program` 已指向原生 GnuPG）。接收短信后按 `config.lua` 中 `FORWARD_RULES` 的规则匹配（关键词或 Lua pattern），转发到企业微信/飞书/钉钉/自定义 webhook/邮件/QQ 等渠道。**全部源码位于 `script/` 目录**（Luatools 烧录时直接选择该文件夹）；文档统一在 `docs/`（CHANGELOG、硬件手册、设计文档），根目录仅保留 README / AGENTS / LICENSE。
 
 **目标硬件：Air780EHV**（用户确认，使用 LuatOS-SoC_V2050 的 101 号 64 位固件）。本项目改编自 Air780E/EP 的上游工程，`PROJECT` 已更正为 `air780ehv_forwarder`。硬件问题先查 `docs/Air780EHV硬件手册V1.1.pdf`。
 
