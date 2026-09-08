@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-基于 LuatOS 的短信转发器固件（纯 Lua，无构建系统、无自动化测试，验证只能真机烧录看串口日志）。git 仓库托管于 [f1owkang/Air780ehvForwarder](https://github.com/f1owkang/Air780ehvForwarder)（main 分支），**提交必须 GPG 签名**（`git commit -S` 即可；签名证书在智能卡上，`gpg.program` 已配置好，无需也无法读出私钥）。接收短信后按 `config.lua` 中 `FORWARD_RULES` 的规则匹配（关键词或 Lua pattern），转发到企业微信/飞书/钉钉/自定义 webhook/邮件/QQ 等渠道。**全部源码位于 `script/` 目录**（Luatools 烧录时直接选择该文件夹）；文档统一在 `docs/`（CHANGELOG、硬件手册、设计文档），根目录仅保留 README / AGENTS / LICENSE。
+基于 LuatOS 的短信转发器固件（纯 Lua，无构建系统、无自动化测试，验证只能真机烧录看串口日志）。git 仓库托管于 [f1owkang/Air780ehvForwarder](https://github.com/f1owkang/Air780ehvForwarder)（main 分支），**提交必须 GPG 签名**：优先直接 `git commit -S` 用已配置的 `user.signingkey` / `gpg.program`（签名证书在智能卡上，无需也无法读出私钥），**仅当签名失败时才排查或更换密钥，不要预先改动密钥配置**。接收短信后按 `config.lua` 中 `FORWARD_RULES` 的规则匹配（关键词或 Lua pattern），转发到企业微信/飞书/钉钉/自定义 webhook/邮件/QQ 等渠道。**全部源码位于 `script/` 目录**（Luatools 烧录时直接选择该文件夹）；文档统一在 `docs/`（CHANGELOG、硬件手册、设计文档），根目录仅保留 README / AGENTS / LICENSE。
 
 ## 安全红线
 

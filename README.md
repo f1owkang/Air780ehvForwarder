@@ -305,6 +305,6 @@ log.info("device", util_mobile.getDeviceIdentityText())
 
 <div align="center">
 
-Made with ❤ · air780ehv_forwarder
+Made with ❤ by f1owkang
 
 </div>
