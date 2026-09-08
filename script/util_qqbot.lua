@@ -5,6 +5,7 @@
 
 local util_http = require "util_http"
 local util_mobile = require "util_mobile"
+local util_location = require "util_location"
 local util_forward = require "util_forward"
 local util_sms_store = require "util_sms_store"
 local TaskManager = require "util_task"
@@ -27,16 +28,6 @@ local TASK_MAIN = "qqbot_main"
 local TASK_WATCHDOG = "qqbot_watchdog"
 local EVT = "QQBOT_INTERNAL_EVENT"
 
-local HELP_TEXT = table.concat({
-    "可用指令:",
-    "帮助/help - 显示本帮助",
-    "状态/status - 设备状态(信号/运营商/内存等)",
-    "短信 [N]/sms [N] - 最近收到的短信, 如: 短信 10",
-    "重载规则/reload - 重新加载转发规则",
-    "测试/test - 触发一次测试转发",
-    "发短信 号码 内容 - 通过设备 SIM 卡发送短信",
-}, "\n")
-
 -- ===== 运行状态 =====
 local state = "OFFLINE"        -- OFFLINE/CONNECTING/AUTHING/RUNNING
 local wsc = nil
@@ -51,6 +42,7 @@ local heartbeat_interval = nil -- 毫秒
 local last_ack_time = 0        -- mcu.ticks(), 心跳 ACK 监控用
 local recent_msg_ids = {}      -- msg_id 去重环形缓存
 local welcome_count = {}       -- openid -> 已回复欢迎消息次数 (内存计数, 重启清零)
+local pending_confirm = {}     -- openid -> { action, expire } 危险指令二次确认 (mcu.ticks 毫秒)
 
 local access_token = nil
 local token_expire_at = 0      -- os.time() 秒
@@ -332,41 +324,260 @@ local function buildStatus()
     return table.concat(lines, "\n")
 end
 
---- 指令解析与执行, 返回回复文本
-local function handleCommand(raw)
-    local content = tostring(raw or ""):gsub("^%s+", ""):gsub("%s+$", "")
-    local lower = content:lower()
+-- ===== 指令系统 (表驱动, 帮助菜单自动生成) =====
 
-    if lower == "帮助" or lower == "help" or lower == "?" then
-        return HELP_TEXT
-    elseif lower == "状态" or lower == "status" then
-        return buildStatus()
-    elseif lower == "重载规则" or lower == "reload" then
-        util_forward.reloadRules()
-        return "已重新加载转发规则, 当前 " .. #(util_forward.getRules() or {}) .. " 条"
-    elseif lower == "测试" or lower == "test" then
-        util_forward.forwardMessage("#QQBOT_TEST", "QQBOT")
-        return "已触发测试转发(经转发规则发送)"
+--- 全角转半角 (字母/数字/标点), 全角空格转普通空格
+local function toHalfWidth(s)
+    local ok, out = pcall(function()
+        local t = {}
+        for _, cp in utf8.codes(s) do
+            if cp >= 0xFF01 and cp <= 0xFF5E then
+                cp = cp - 0xFEE0
+            elseif cp == 0x3000 then
+                cp = 0x20
+            end
+            t[#t + 1] = utf8.char(cp)
+        end
+        return table.concat(t)
+    end)
+    return ok and out or s
+end
+
+--- 指令输入归一化: 去 @前缀/斜杠前缀, 全角转半角, 空白合一, 去首尾
+local function normalizeInput(raw)
+    local s = toHalfWidth(tostring(raw or ""))
+    s = s:gsub("^@%S+%s*", "")    -- 群聊 @机器人 前缀残留
+    s = s:gsub("^[/\\]+", "")     -- / 前缀容忍
+    s = s:gsub("%s+", " ")
+    s = s:gsub("^ ", ""):gsub(" $", "")
+    return s
+end
+
+local function buildSignal()
+    local rsrp, csq = mobile.rsrp(), mobile.csq()
+    if rsrp and rsrp ~= 0 then
+        local s = "RSRP: " .. rsrp .. " dBm"
+        if csq and csq >= 0 and csq <= 31 then
+            s = s .. "  CSQ: " .. csq
+        end
+        if rsrp >= -80 then s = s .. " (优)"
+        elseif rsrp >= -90 then s = s .. " (良)"
+        elseif rsrp >= -100 then s = s .. " (一般)"
+        else s = s .. " (差)" end
+        return s
+    end
+    return "信号获取失败"
+end
+
+local function buildDeviceInfo()
+    local lines = { "设备信息:" }
+    local id_text = util_mobile.getDeviceIdentityText()
+    if id_text ~= "" then
+        lines[#lines + 1] = id_text
+    end
+    local number = util_mobile.getLocalNumber(2, 1000)
+    if number then
+        lines[#lines + 1] = "本机号码: " .. number .. " (系统获取)"
+    elseif config.FALLBACK_LOCAL_NUMBER ~= "" then
+        lines[#lines + 1] = "本机号码: " .. config.FALLBACK_LOCAL_NUMBER .. " (备用配置)"
+    else
+        lines[#lines + 1] = "本机号码: 未知"
+    end
+    return table.concat(lines, "\n")
+end
+
+local function buildTimeInfo()
+    local synced = os.time() > 1714500000
+    return "设备时间: " .. os.date("%Y-%m-%d %H:%M:%S") .. (synced and " (已同步)" or " (未同步)")
+end
+
+--- 转发规则列表 (目标地址/标识打码)
+local function buildRulesList()
+    local rules = util_forward.getRules() or {}
+    if #rules == 0 then
+        return "未配置转发规则 (config.lua 第 4 节 FORWARD_RULES)"
+    end
+    local lines = { "转发规则 (" .. #rules .. " 条):" }
+    for i, r in ipairs(rules) do
+        local match_desc = r.regular and ("正则:" .. r.regular)
+            or (r.keyword and ("关键词:" .. r.keyword) or "全部")
+        local target = ""
+        if type(r.webhook) == "string" then
+            target = r.webhook:match("^https?://([^/]+)") or ""
+        elseif type(r.openid) == "string" then
+            target = "QQ:" .. r.openid:sub(1, 6) .. "***"
+        elseif type(r.group_openid) == "string" then
+            target = "QQ群:" .. r.group_openid:sub(1, 6) .. "***"
+        elseif r.email_to then
+            target = "邮件"
+        end
+        lines[#lines + 1] = string.format("[%d] %s | %s | %s", i, r.channel or "?", match_desc, target)
+    end
+    return table.concat(lines, "\n")
+end
+
+local function cmdRecentSms(arg)
+    local n = tonumber(arg) or 5
+    return util_sms_store.recentText(n)
+end
+
+local function cmdSendSms(arg)
+    local num, text = arg:match("^([%+]?%d%d%d%d%d?%d?%d?%d?%d?%d?%d?%d?%d?%d?%d?)%s+(.+)$")
+    if not num or not text then
+        return "用法: 发短信 号码 内容\n例: 发短信 13800138000 你好"
+    end
+    local ok = sms.send(num, text)
+    log.info("util_qqbot", "指令发短信", num, ok)
+    return (ok and "已提交发送: " or "发送失败: ") .. num
+end
+
+local function cmdTest()
+    util_forward.forwardMessage("#QQBOT_TEST", "QQBOT")
+    return "已触发测试转发(经转发规则发送)"
+end
+
+local function cmdReload()
+    util_forward.reloadRules()
+    return "已重新加载转发规则, 当前 " .. #(util_forward.getRules() or {}) .. " 条"
+end
+
+local function cmdTraffic()
+    util_mobile.queryTraffic()
+    return "已向运营商发送流量查询短信, 回复将以短信到达并按规则转发"
+end
+
+local function cmdLocation()
+    local old_lat = util_location.get()
+    util_location.refresh()
+    -- 等待定位刷新 (最长 20 秒), 超时回退缓存
+    local deadline = mcu.ticks() + 20000
+    while mcu.ticks() < deadline do
+        sys.wait(2000)
+        local lat, _, link = util_location.get()
+        if link ~= "" and (lat ~= old_lat or old_lat == 0) then
+            return "定位: " .. link
+        end
+    end
+    local _, _, link = util_location.get()
+    return link ~= "" and ("定位(缓存): " .. link) or "定位失败, 稍后再试"
+end
+
+local function cmdFlymode()
+    log.warn("util_qqbot", "指令触发飞行模式自愈")
+    mobile.flymode(0, true)
+    sys.wait(3000)
+    mobile.flymode(0, false)
+    sys.waitUntil("IP_READY", config.NETWORK_TIMEOUT_DEFAULT)
+    return "飞行模式已执行一次, 网络状态: " .. util_mobile.status() .. "\nQbot 通道将自动重连"
+end
+
+local function cmdReboot(arg, ctx)
+    pending_confirm[ctx.openid] = { action = "reboot", expire = mcu.ticks() + 60000 }
+    return '确认重启设备? 60 秒内发送 "确认" 执行'
+end
+
+local function cmdConfirm(arg, ctx)
+    local p = pending_confirm[ctx.openid]
+    pending_confirm[ctx.openid] = nil
+    if not p or mcu.ticks() > p.expire then
+        return "没有待确认的操作"
+    end
+    if p.action == "reboot" then
+        -- 先回复再重启, 让回复来得及发出
+        sys.timerStart(function()
+            log.warn("util_qqbot", "指令触发重启")
+            if cleanupAllTasks then
+                cleanupAllTasks()
+            end
+            sys.wait(1000)
+            rtos.restart()
+        end, 3000)
+        return "收到, 设备 3 秒后重启"
+    end
+    return "未知操作"
+end
+
+local buildHelp                 -- 前向声明, 由 COMMANDS 自动生成
+
+-- 指令表: keys 为触发词(小写), group 决定帮助菜单分组, hidden 不出现在帮助中
+local COMMANDS = {
+    { group = "查询", keys = { "帮助", "help", "?" }, desc = "显示本帮助", fn = function() return buildHelp() end },
+    { group = "查询", keys = { "状态", "status" }, desc = "设备状态(信号/网络/内存/规则)", fn = function() return buildStatus() end },
+    { group = "查询", keys = { "信号", "signal" }, desc = "信号强度", fn = buildSignal },
+    { group = "查询", keys = { "设备", "device" }, desc = "IMEI/IMSI/ICCID/本机号码", fn = buildDeviceInfo },
+    { group = "查询", keys = { "定位", "位置", "location" }, desc = "基站定位地图链接", fn = cmdLocation },
+    { group = "查询", keys = { "流量", "查流量", "traffic" }, desc = "发短信查询流量", fn = cmdTraffic },
+    { group = "查询", keys = { "时间", "time" }, desc = "设备时间与同步状态", fn = buildTimeInfo },
+    { group = "查询", keys = { "规则", "rules" }, desc = "列出转发规则(目标打码)", fn = buildRulesList },
+    { group = "短信", keys = { "短信", "sms" }, desc = "最近短信, 如: 短信 10", fn = cmdRecentSms },
+    { group = "短信", keys = { "发短信" }, desc = "设备代发, 如: 发短信 13800138000 内容", fn = cmdSendSms },
+    { group = "短信", keys = { "测试", "test" }, desc = "触发一次测试转发", fn = cmdTest },
+    { group = "控制", keys = { "重载规则", "reload" }, desc = "重载转发规则", fn = cmdReload },
+    { group = "控制", keys = { "飞行模式", "flymode" }, desc = "开关一次飞行模式(网络自愈)", fn = cmdFlymode },
+    { group = "控制", keys = { "重启", "reboot" }, desc = "重启设备(需二次确认)", fn = cmdReboot },
+    { keys = { "确认", "confirm" }, desc = "", hidden = true, fn = cmdConfirm },
+}
+
+-- 触发词 -> 指令项 的索引
+local cmd_map = {}
+for _, c in ipairs(COMMANDS) do
+    for _, k in ipairs(c.keys) do
+        cmd_map[k:lower()] = c
+    end
+end
+
+buildHelp = function()
+    local lines = { "指令菜单 (支持 / 前缀; 直接 @机器人 不带内容也可打开本菜单):" }
+    for _, g in ipairs({ "查询", "短信", "控制" }) do
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "── " .. g .. " ──"
+        for _, c in ipairs(COMMANDS) do
+            if c.group == g and not c.hidden then
+                lines[#lines + 1] = table.concat(c.keys, "/") .. " - " .. c.desc
+            end
+        end
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = '危险操作需二次确认: 发送 "重启" 后再发送 "确认"'
+    return table.concat(lines, "\n")
+end
+
+--- 指令入口: 归一化后查表分发, 返回回复文本 (异常与未知指令均返回提示)
+local function handleCommand(raw, ctx)
+    local s = normalizeInput(raw)
+    if s == "" then
+        return buildHelp()
     end
 
-    -- 短信 [N] / sms [N], 默认 5 条
-    local n = content:match("^短信%s*(%d+)$") or lower:match("^sms%s*(%d+)$")
-    if lower == "短信" or lower == "sms" then
-        n = "5"
-    end
-    if n then
-        return util_sms_store.recentText(tonumber(n))
+    local cmd, arg = s:match("^(%S+)%s*(.-)$")
+    cmd = cmd:lower()
+
+    local entry = cmd_map[cmd]
+    if entry then
+        local ok, reply = pcall(entry.fn, arg, ctx or {})
+        if ok then
+            return utf8Sub(reply or "指令执行完毕", 1500)
+        end
+        log.error("util_qqbot", "指令执行异常", cmd, reply)
+        return "指令执行出错: " .. tostring(reply)
     end
 
-    -- 发短信 号码 内容
-    local num, text = content:match("^发短信%s+([%+]?%d%d%d%d%d?%d?%d?%d?%d?%d?%d?%d?%d?%d?%d?)%s+(.+)$")
-    if num and text then
-        local ok = sms.send(num, text)
-        log.info("util_qqbot", "指令发短信", num, ok)
-        return (ok and "已提交发送: " or "发送失败: ") .. num
+    -- 未知指令: 基于前缀给出建议 (输入是某触发词的前缀, 或触发词是输入的前缀)
+    local suggest = {}
+    for k in pairs(cmd_map) do
+        if #k > 1 and #cmd > 0 and (k:sub(1, #cmd) == cmd or cmd:sub(1, #k) == k) then
+            suggest[#suggest + 1] = k
+        end
     end
-
-    return "未知指令\n" .. HELP_TEXT
+    local head = "未知指令: " .. cmd
+    if #suggest > 0 then
+        table.sort(suggest)
+        if #suggest > 4 then
+            for i = #suggest, 5, -1 do suggest[i] = nil end
+        end
+        head = head .. "\n你是想找: " .. table.concat(suggest, " / ") .. " ?"
+    end
+    return head .. "\n\n" .. buildHelp()
 end
 
 --- 被动回复单聊消息 (携带 msg_id, 不受主动消息频控)
@@ -458,7 +669,7 @@ local function processMessage(t, d)
             replyWelcome(openid, msg_id, false, nil)
             return
         end
-        replyC2C(openid, msg_id, 1, utf8Sub(handleCommand(content), 1500))
+        replyC2C(openid, msg_id, 1, handleCommand(content, { openid = openid }))
 
     elseif t == "GROUP_AT_MESSAGE_CREATE" then
         local openid = d.author and d.author.member_openid
@@ -472,7 +683,7 @@ local function processMessage(t, d)
             replyWelcome(openid, msg_id, true, group_openid)
             return
         end
-        replyGroup(group_openid, msg_id, 1, utf8Sub(handleCommand(content), 1500))
+        replyGroup(group_openid, msg_id, 1, handleCommand(content, { openid = openid }))
     end
 end
 

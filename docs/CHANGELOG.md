@@ -7,6 +7,8 @@
 - **Qbot 交互通道**：设备直连 QQ 官方机器人（无需服务器），在 QQ 单聊或群 @机器人 即可下发指令
   - 基于 LuatOS websocket 库实现 API v2 网关协议（Access Token 鉴权、IDENTIFY/RESUME、心跳保活、指数退避重连）
   - 指令：帮助 / 状态 / 短信 [N] / 重载规则 / 测试 / 发短信 号码 内容
+  - 指令系统升级为表驱动：新增 信号/设备/定位/流量/时间/规则/飞行模式/重启(二次确认)；帮助菜单按分组自动生成
+  - 输入体验：全角自动转半角、/ 前缀容忍、群聊 @前缀剥离、空输入(只@)返回菜单、未知指令前缀建议
   - openid 白名单防未授权操控；非白名单用户自动回复欢迎消息（含其 openid 与配置指引），每 openid 最多 5 次防刷；REST 请求强制域名白名单与 URL 校验
   - 新增 `util_sms_store.lua`：fskv 持久化的最近短信环形缓存（20 条，断电不丢）
   - 配置项：`QQBOT_ENABLED / QQBOT_APPID / QQBOT_SECRET / QQBOT_ALLOW`
