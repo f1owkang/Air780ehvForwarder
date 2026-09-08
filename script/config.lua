@@ -74,6 +74,9 @@ return {
     QQBOT_APPID = "",
     QQBOT_SECRET = "",
 
+    -- 消息用 markdown 格式发送 (需机器人具备 markdown 消息权限; 发送失败自动回退纯文本)
+    QQBOT_MARKDOWN = false,
+
     -- 允许下指令的 QQ openid 白名单 (防止他人操控设备)
     -- 未配置的用户发消息会收到欢迎回复(含其 openid 与配置方法), 每个 openid 最多 5 次
     QQBOT_ALLOW = {

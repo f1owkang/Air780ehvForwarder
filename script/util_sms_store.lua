@@ -23,6 +23,18 @@ local function utf8Sub(s, max_bytes)
     return s:sub(1, i) .. "…"
 end
 
+--- fskv 数值读取 (键缺失/类型异常时返回默认值; LuatOS 的 tonumber(nil) 会直接抛错, 必须先判型)
+local function kvNumber(key, default)
+    local v = fskv.get(key)
+    if type(v) == "number" then
+        return v
+    end
+    if type(v) == "string" then
+        return tonumber(v) or default
+    end
+    return default
+end
+
 --- 保存一条最近短信
 -- @param sender 发件号码
 -- @param content 短信内容
@@ -32,22 +44,28 @@ function util_sms_store.save(sender, content, time)
         return
     end
 
-    local idx = tonumber(fskv.get("sms_recent_idx")) or 0
-    local total = tonumber(fskv.get("sms_recent_total")) or 0
+    -- 缓存失败绝不能影响短信转发主流程
+    local ok, err = pcall(function()
+        local idx = kvNumber("sms_recent_idx", 0)
+        local total = kvNumber("sms_recent_total", 0)
 
-    idx = idx % MAX_COUNT + 1
-    if total < MAX_COUNT then
-        total = total + 1
+        idx = idx % MAX_COUNT + 1
+        if total < MAX_COUNT then
+            total = total + 1
+        end
+
+        fskv.set("sms_recent_idx", idx)
+        fskv.set("sms_recent_total", total)
+        fskv.set("sms_recent_" .. idx, json.encode({
+            sender = tostring(sender or ""),
+            content = utf8Sub(content, MAX_CONTENT_BYTES),
+            time = tostring(time or ""),
+        }))
+        log.debug("util_sms_store", "缓存短信", idx .. "/" .. total, sender)
+    end)
+    if not ok then
+        log.error("util_sms_store", "缓存短信失败(不影响转发)", err)
     end
-
-    fskv.set("sms_recent_idx", idx)
-    fskv.set("sms_recent_total", total)
-    fskv.set("sms_recent_" .. idx, json.encode({
-        sender = tostring(sender or ""),
-        content = utf8Sub(content, MAX_CONTENT_BYTES),
-        time = tostring(time or ""),
-    }))
-    log.debug("util_sms_store", "缓存短信", idx .. "/" .. total, sender)
 end
 
 --- 取最近 n 条短信 (新→旧)
@@ -55,8 +73,8 @@ end
 function util_sms_store.recent(n)
     n = math.min(math.max(tonumber(n) or 5, 1), MAX_COUNT)
 
-    local idx = tonumber(fskv.get("sms_recent_idx")) or 0
-    local total = tonumber(fskv.get("sms_recent_total")) or 0
+    local idx = kvNumber("sms_recent_idx", 0)
+    local total = kvNumber("sms_recent_total", 0)
 
     local list = {}
     for i = 0, math.min(n, total) - 1 do
@@ -77,7 +95,7 @@ end
 
 --- 已缓存条数
 function util_sms_store.count()
-    return tonumber(fskv.get("sms_recent_total")) or 0
+    return kvNumber("sms_recent_total", 0)
 end
 
 --- 最近 n 条短信的文本格式 (直接用于聊天回复)

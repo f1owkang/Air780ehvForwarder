@@ -34,6 +34,15 @@
 - 命名规范统一：入口 `main.lua`，配置 `config.lua`，模块 `util_*.lua`；main.lua 全局 `TaskManager` 更名为 `util_task`
 - `PROJECT` 更正为 `air780ehv_forwarder`（与实际芯片一致）
 
+### Bug 修复
+
+- 修复 LuatOS 固件 `tonumber(nil)` 直接抛错导致的问题：未收到短信时 `状态` 指令崩溃；**首条短信会使回调中断、影响转发**——短信缓存读写改为类型检查读取，`save()` 整体 pcall 包裹，缓存故障不再影响转发主流程
+- token 有效期解析增加类型防御
+
+### 新功能（v1.3.0 续）
+
+- **Qbot markdown 回复**：新增 `QQBOT_MARKDOWN` 配置（默认关闭），开启后菜单/状态等回复以 markdown 格式发送（标题与分组加粗）；机器人无 markdown 权限时自动回退纯文本并本次会话记住
+
 ---
 
 ## v1.2.0 (2026-04-09)

@@ -46,6 +46,7 @@ local pending_confirm = {}     -- openid -> { action, expire } 危险指令二�
 
 local access_token = nil
 local token_expire_at = 0      -- os.time() 秒
+local md_available = nil       -- markdown 可用性: nil=未测, true/false 本次会话内有效
 
 local onDisconnected           -- 前向声明, 见下方实现
 
@@ -65,6 +66,11 @@ local function utf8Sub(s, max_bytes)
         i = i - 1
     end
     return s:sub(1, i) .. "…"
+end
+
+--- markdown 样式: 开启 QQBOT_MARKDOWN 时返回粗体, 纯文本模式原样返回
+local function mdBold(s)
+    return config.QQBOT_MARKDOWN and ("**" .. s .. "**") or s
 end
 
 --- 校验外发 REST URL: 仅 http/https 且 host 必须在白名单内 (拒绝 localhost/环回/私网/保留地址等一切非白名单目标)
@@ -130,7 +136,10 @@ local function fetchToken()
         return nil
     end
 
-    local expires = tonumber(data.expires_in) or 7200
+    local expires = 7200
+    if type(data.expires_in) == "string" or type(data.expires_in) == "number" then
+        expires = tonumber(data.expires_in) or 7200
+    end
     access_token = data.access_token
     token_expire_at = os.time() + expires
     log.info("util_qqbot", "access token 已更新, 有效期", expires .. "s")
@@ -179,6 +188,38 @@ local function fetchGateway()
     end
     log.info("util_qqbot", "网关地址", data.url)
     return data.url
+end
+
+--- 发送消息 (被动/主动通用): 开启 QQBOT_MARKDOWN 时用 msg_type=2, 发送失败自动回退纯文本并记住
+local function postMessage(path, content, msg_id, seq)
+    local function buildBody(use_md)
+        local b = {}
+        if use_md then
+            b.msg_type = 2
+            b.markdown = { content = content }
+        else
+            b.msg_type = 0
+            b.content = content
+        end
+        if msg_id then
+            b.msg_id = msg_id
+            b.msg_seq = seq or 1
+        end
+        return b
+    end
+
+    local use_md = config.QQBOT_MARKDOWN == true and md_available ~= false
+    local code, resp = qqApi("POST", path, buildBody(use_md))
+    if use_md then
+        if type(code) == "number" and code >= 200 and code < 300 then
+            md_available = true
+        else
+            log.warn("util_qqbot", "markdown 发送失败, 本次会话回退纯文本", "code", code, "resp", resp)
+            md_available = false
+            code, resp = qqApi("POST", path, buildBody(false))
+        end
+    end
+    return code, resp
 end
 
 -- ===== WebSocket 网关协议 =====
@@ -296,7 +337,7 @@ local function isAllowed(openid)
 end
 
 local function buildStatus()
-    local lines = { "设备状态:" }
+    local lines = { mdBold("设备状态:") }
 
     local rsrp, csq = mobile.rsrp(), mobile.csq()
     if rsrp and rsrp ~= 0 then
@@ -527,10 +568,10 @@ for _, c in ipairs(COMMANDS) do
 end
 
 buildHelp = function()
-    local lines = { "指令菜单 (支持 / 前缀; 直接 @机器人 不带内容也可打开本菜单):" }
+    local lines = { mdBold("指令菜单") .. " (支持 / 前缀; 直接 @机器人 不带内容也可打开本菜单):" }
     for _, g in ipairs({ "查询", "短信", "控制" }) do
         lines[#lines + 1] = ""
-        lines[#lines + 1] = "── " .. g .. " ──"
+        lines[#lines + 1] = mdBold("── " .. g .. " ──")
         for _, c in ipairs(COMMANDS) do
             if c.group == g and not c.hidden then
                 lines[#lines + 1] = table.concat(c.keys, "/") .. " - " .. c.desc
@@ -596,12 +637,7 @@ local function replyC2C(openid, msg_id, seq, content)
         log.error("util_qqbot", "openid 非法, 拒绝回复", openid)
         return false
     end
-    local code, resp = qqApi("POST", "/v2/users/" .. openid .. "/messages", {
-        content = content,
-        msg_type = 0,
-        msg_id = msg_id,
-        msg_seq = seq or 1,
-    })
+    local code, resp = postMessage("/v2/users/" .. openid .. "/messages", content, msg_id, seq)
     local ok = type(code) == "number" and code >= 200 and code < 300
     if ok then
         log.info("util_qqbot", "单聊回复成功", code)
@@ -617,12 +653,7 @@ local function replyGroup(group_openid, msg_id, seq, content)
         log.error("util_qqbot", "group_openid 非法, 拒绝回复", group_openid)
         return false
     end
-    local code, resp = qqApi("POST", "/v2/groups/" .. group_openid .. "/messages", {
-        content = content,
-        msg_type = 0,
-        msg_id = msg_id,
-        msg_seq = seq or 1,
-    })
+    local code, resp = postMessage("/v2/groups/" .. group_openid .. "/messages", content, msg_id, seq)
     local ok = type(code) == "number" and code >= 200 and code < 300
     if ok then
         log.info("util_qqbot", "群回复成功", code)
@@ -971,10 +1002,7 @@ function util_qqbot.pushToUser(openid, content)
     if type(content) ~= "string" or content == "" then
         return false
     end
-    local code, resp = qqApi("POST", "/v2/users/" .. openid .. "/messages", {
-        content = utf8Sub(content, 1500),
-        msg_type = 0,
-    })
+    local code, resp = postMessage("/v2/users/" .. openid .. "/messages", utf8Sub(content, 1500), nil, nil)
     local ok = type(code) == "number" and code >= 200 and code < 300
     if ok then
         log.info("util_qqbot", "单聊推送成功", code)
@@ -996,10 +1024,7 @@ function util_qqbot.pushToGroup(group_openid, content)
     if type(content) ~= "string" or content == "" then
         return false
     end
-    local code, resp = qqApi("POST", "/v2/groups/" .. group_openid .. "/messages", {
-        content = utf8Sub(content, 1500),
-        msg_type = 0,
-    })
+    local code, resp = postMessage("/v2/groups/" .. group_openid .. "/messages", utf8Sub(content, 1500), nil, nil)
     local ok = type(code) == "number" and code >= 200 and code < 300
     if ok then
         log.info("util_qqbot", "群推送成功", code)
