@@ -96,8 +96,8 @@ function util_smtp.send(rule, msg)
 
     log.info("util_smtp", "连接SMTP", rule.smtp_server, port, ssl and "SSL" or "明文")
 
-    -- 创建socket
-    local netc = socket.create(taskName, function() return true end)
+    -- 创建socket (新版固件 socket.create 第一个参数是网络适配器编号, taskName 是第二个参数)
+    local netc = socket.create(nil, taskName)
     if not netc then
         log.error("util_smtp", "创建socket失败")
         return false
