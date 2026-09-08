@@ -546,6 +546,35 @@ local function cmdFlymode()
     return "✅ 飞行模式已执行一次，网络状态：" .. util_mobile.status() .. "\nℹ️ Qbot 通道将自动重连"
 end
 
+--- 构建按钮键盘: 每行最多 4 个按钮, 点击即发送对应指令 (action type=2, enter=true)
+-- permission 限定仅发起人可点击
+local function buildKeyboard(openid, labels)
+    if not openid then
+        return nil
+    end
+    local rows, row = {}, {}
+    for i, label in ipairs(labels) do
+        row[#row + 1] = {
+            id = tostring(i),
+            render_data = { label = label, visited_label = label .. " ✓", style = 1 },
+            action = {
+                type = 2,
+                permission = { type = 0, user_list = { openid } },
+                data = label,
+                enter = true,
+            },
+        }
+        if #row >= 4 then
+            rows[#rows + 1] = { buttons = row }
+            row = {}
+        end
+    end
+    if #row > 0 then
+        rows[#rows + 1] = { buttons = row }
+    end
+    return { rows = rows }
+end
+
 local function cmdReboot(arg, ctx)
     pending_confirm[ctx.openid] = { action = "reboot", expire = mcu.ticks() + 60000 }
     local text = table.concat({
@@ -591,35 +620,6 @@ local function cmdCancel(arg, ctx)
         return "✗ 已取消"
     end
     return "ℹ️ 没有待确认的操作"
-end
-
---- 构建按钮键盘: 每行最多 4 个按钮, 点击即发送对应指令 (action type=2, enter=true)
--- permission 限定仅发起人可点击
-local function buildKeyboard(openid, labels)
-    if not openid then
-        return nil
-    end
-    local rows, row = {}, {}
-    for i, label in ipairs(labels) do
-        row[#row + 1] = {
-            id = tostring(i),
-            render_data = { label = label, visited_label = label .. " ✓", style = 1 },
-            action = {
-                type = 2,
-                permission = { type = 0, user_list = { openid } },
-                data = label,
-                enter = true,
-            },
-        }
-        if #row >= 4 then
-            rows[#rows + 1] = { buttons = row }
-            row = {}
-        end
-    end
-    if #row > 0 then
-        rows[#rows + 1] = { buttons = row }
-    end
-    return { rows = rows }
 end
 
 local buildHelp                 -- 前向声明, 由 COMMANDS 自动生成
