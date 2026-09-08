@@ -89,10 +89,15 @@ function util_location.get()
 end
 
 -- 启动基站信息刷新任务（替代原来的无限循环任务）
+-- 注意: 该刷新走网络信令, 过于频繁会增加耗电与运营商侧流量计数, 间隔由 config.CELLINFO_INTERVAL 控制
 function util_location.startCellInfoRefresh()
+    local interval = config.CELLINFO_INTERVAL or 300000  -- 默认 5 分钟, 原硬编码 30 秒
+    if interval < 60000 then
+        interval = 60000  -- 下限 1 分钟, 防止误配成高频
+    end
     TaskManager.createLoop(CELLINFO_TASK_NAME, function()
         refreshCellInfo()
-    end, 30000, function(success, err) -- 30秒刷新一次
+    end, interval, function(success, err)
         if not success then
             log.error("util_location", "cellinfo refresh task failed:", err)
         end

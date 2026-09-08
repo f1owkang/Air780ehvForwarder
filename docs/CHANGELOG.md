@@ -1,5 +1,16 @@
 # 更新日志
 
+## v1.4.1 (2026-09-08)
+
+### 新功能
+
+- **Qbot 夜间省流策略**：`QQBOT_NIGHT_SAVE = true` 后，每天 `QQBOT_NIGHT_START` ~ `QQBOT_NIGHT_END` 时段（默认 23:30~07:00，支持跨零点）wss 自动断开休眠，时段结束自动恢复长连；白天体验不变。**休眠期间短信转发不受影响**（qq 渠道走 REST 主动推送，不依赖长连），仅夜间窗口内 QQ 指令/按钮暂时不可用；默认关闭保持 24h 长连
+- **基站小区信息刷新间隔可配置**（`CELLINFO_INTERVAL`，默认 5 分钟，下限 1 分钟）：原硬编码 30 秒，走网络信令，过频会增加运营商侧流量计数与耗电
+
+### 修复
+
+- **SMTP 链路真机调通**：`socket.read` 可能返回布尔值，readResponse/sendCommand 增加类型防护，不再 `attempt to index a boolean value`
+
 ## v1.4.0 (2026-09-08)
 
 ### 新功能

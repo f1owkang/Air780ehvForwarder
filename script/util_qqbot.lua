@@ -52,6 +52,49 @@ local token_expire_at = 0      -- os.time() 秒
 local md_available = nil       -- markdown 可用性: nil=未测, true/false 本次会话内有效
 local kb_available = nil       -- 按钮键盘可用性: nil=未测, true/false 本次会话内有效
 
+--- 夜间省流窗口: 返回距窗口结束的毫秒数, 不在窗口内(或未启用/时间未同步)返回 0
+-- 窗口支持跨零点 (如 23:30 ~ 07:00); 窗口内 wss 休眠, 短信转发仍走 REST 不受影响
+local function nightWindowRemaining()
+    if not config.QQBOT_NIGHT_SAVE then
+        return 0
+    end
+    -- 时间未同步时 os.date 不可信, 跳过夜间策略保持在线
+    if os.time() < 1714500000 then
+        return 0
+    end
+    local sh, sm = tostring(config.QQBOT_NIGHT_START or "23:30"):match("^(%d%d?):(%d%d?)$")
+    local eh, em = tostring(config.QQBOT_NIGHT_END or "07:00"):match("^(%d%d?):(%d%d?)$")
+    if not sh or not eh then
+        log.warn("util_qqbot", "夜间省流配置格式错误, 应为 \"HH:MM\"", config.QQBOT_NIGHT_START, config.QQBOT_NIGHT_END)
+        return 0
+    end
+    local t = os.date("*t")
+    local now_min = t.hour * 60 + t.min
+    local start_min = tonumber(sh) * 60 + tonumber(sm)
+    local end_min = tonumber(eh) * 60 + tonumber(em)
+    if start_min == end_min then
+        return 0
+    end
+    local in_window
+    if start_min < end_min then
+        in_window = now_min >= start_min and now_min < end_min
+    else
+        in_window = now_min >= start_min or now_min < end_min  -- 跨零点
+    end
+    if not in_window then
+        return 0
+    end
+    local remain_min
+    if start_min < end_min then
+        remain_min = end_min - now_min
+    elseif now_min >= start_min then
+        remain_min = 24 * 60 - now_min + end_min
+    else
+        remain_min = end_min - now_min
+    end
+    return remain_min * 60000 + 60000  -- 多等 1 分钟兜底, 避免边界抖动
+end
+
 local onDisconnected           -- 前向声明, 见下方实现
 
 -- ===== 工具 =====
@@ -1242,6 +1285,16 @@ local function qqbotMainTask()
             sys.waitUntil("IP_READY", 60000)
         end
 
+        -- 夜间省流: 窗口内 wss 休眠, 睡到窗口结束再恢复长连
+        -- 夜间短信转发不受影响 (qq 渠道走 REST 主动推送, 不依赖 wss)
+        local night_ms = nightWindowRemaining()
+        if night_ms > 0 then
+            log.info("util_qqbot", "夜间省流: wss 休眠", night_ms / 60000, "分钟后恢复")
+            onDisconnected("夜间省流")
+            state = "OFFLINE"
+            sys.wait(night_ms)
+        end
+
         if not fetchToken() then
             log.warn("util_qqbot", "token 未就绪", backoff_ms .. "ms 后重试")
         else
@@ -1254,19 +1307,29 @@ local function qqbotMainTask()
                     while state ~= "RUNNING" and state ~= "OFFLINE" and mcu.ticks() < deadline do
                         sys.waitUntil(EVT, 5000)
                     end
-                    -- 运行中, 等待断线 (30 秒轮询兜底)
+                    -- 运行中, 等待断线 (30 秒轮询兜底); 进入夜间窗口主动下线
                     while state == "RUNNING" do
                         sys.waitUntil(EVT, 30000)
+                        if nightWindowRemaining() > 0 then
+                            log.info("util_qqbot", "夜间省流: 进入夜间窗口, 主动下线")
+                            break
+                        end
                     end
                 end
             end
         end
 
-        -- 清理并退避重连
+        -- 清理并等待后重连 (夜间下线睡到窗口结束, 异常退避照常)
         onDisconnected("主循环清理")
         state = "OFFLINE"
-        sys.wait(backoff_ms)
-        bumpBackoff()
+        night_ms = nightWindowRemaining()
+        if night_ms > 0 then
+            log.info("util_qqbot", "夜间省流: 休眠至窗口结束", night_ms / 60000, "分钟")
+            sys.wait(night_ms)
+        else
+            sys.wait(backoff_ms)
+            bumpBackoff()
+        end
     end
 end
 

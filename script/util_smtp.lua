@@ -17,7 +17,11 @@ local function readResponse(netc, taskName, timeout)
     timeout = timeout or SMTP_TIMEOUT
     socket.rx(netc, 1024)
     libnet.wait(taskName, timeout, netc)
-    return socket.read(netc, 1024)
+    local data = socket.read(netc, 1024)
+    if type(data) ~= "string" then
+        return nil
+    end
+    return data
 end
 
 --- 发送SMTP命令并读取响应
@@ -32,7 +36,11 @@ local function sendCommand(netc, taskName, cmd, timeout)
     libnet.wait(taskName, timeout or SMTP_TIMEOUT, netc)
     socket.rx(netc, 1024)
     libnet.wait(taskName, timeout or SMTP_TIMEOUT, netc)
-    return socket.read(netc, 1024)
+    local data = socket.read(netc, 1024)
+    if type(data) ~= "string" then
+        return nil
+    end
+    return data
 end
 
 --- 检查SMTP响应码

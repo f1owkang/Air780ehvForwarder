@@ -31,6 +31,9 @@ return {
     -- 定时基站定位间隔, 单位毫秒, 设置为 0 关闭
     LOCATION_INTERVAL = 0,
 
+    -- 基站小区信息刷新间隔, 单位毫秒 (走网络信令, 过频会增加流量计数与耗电)
+    CELLINFO_INTERVAL = 300000,                -- 默认 5 分钟, 最低 1 分钟
+
     -- 定时开关飞行模式间隔, 单位毫秒, 设置为 0 关闭
     FLYMODE_INTERVAL = 1000 * 60 * 60 * 12,
 
@@ -86,6 +89,14 @@ return {
 
     -- 连接成功后自动同步单聊窗口底部的原生菜单 (状态/短信/规则/更多, 幂等)
     QQBOT_MENU = true,
+
+    -- 夜间省流策略: 默认 false = 24 小时长连 (指令随时可用, 流量约 30-50MB/月)
+    -- 设为 true 后: 每天 QQBOT_NIGHT_START ~ QQBOT_NIGHT_END 时段 wss 自动断开休眠,
+    -- 时段结束后自动恢复长连; 时段格式 "HH:MM", 支持跨零点 (如 23:30 ~ 07:00)
+    -- 休眠期间: 短信转发不受影响 (qq 渠道走 REST 推送, 不依赖 wss); QQ 指令与按钮暂时不可用
+    QQBOT_NIGHT_SAVE = false,
+    QQBOT_NIGHT_START = "23:30",
+    QQBOT_NIGHT_END = "07:00",
 
     -- 允许下指令的 QQ openid 白名单 (防止他人操控设备)
     -- 未配置的用户发消息会收到欢迎回复(含其 openid 与配置方法), 每个 openid 最多 3 次
