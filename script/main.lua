@@ -486,7 +486,8 @@ sys.taskInit(function()
         local mv = util_mobile.getVoltage()
         if mv and mv > 0 then
             log.info("main", "供电电压", string.format("%.2f V", mv / 1000))
-            if mv < low_threshold and mcu.ticks() - last_warn > 3600000 then  -- 低电每小时最多告警一次
+            -- 只在读数处于合理区间(3.0~6.0V)时才判定低电, 异常读数只记录不告警, 防止误报刷屏
+            if mv >= 3000 and mv < low_threshold and mcu.ticks() - last_warn > 3600000 then  -- 低电每小时最多告警一次
                 last_warn = mcu.ticks()
                 log.warn("main", "供电电压过低", mv .. "mV < " .. low_threshold .. "mV")
                 util_notify.add("#BAT_LOW 供电电压过低: " .. string.format("%.2f V", mv / 1000)

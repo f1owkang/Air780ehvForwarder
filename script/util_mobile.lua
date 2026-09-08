@@ -145,6 +145,7 @@ function util_mobile.getBand()
 end
 
 --- 读取供电电压 (VBAT, 毫伏), 用于状态展示与低电告警
+-- adc.read 返回 (原始值, 计算值mV), 必须取第二个返回值
 -- @return number|nil 电压毫伏值, 固件/平台不支持或读取失败时返回 nil
 function util_mobile.getVoltage()
     local ok, mv = pcall(function()
@@ -152,7 +153,7 @@ function util_mobile.getVoltage()
             return nil
         end
         adc.open(adc.CH_VBAT)
-        local v = adc.read(adc.CH_VBAT)
+        local _, v = adc.read(adc.CH_VBAT)
         adc.close(adc.CH_VBAT)
         if type(v) == "number" and v > 0 then
             return v

@@ -207,37 +207,54 @@ local function poll()
 end
 
 --- 启动时从 fskv 恢复断电前未发完的队列消息 (每上电执行一次)
+-- 注意: fskv.iter 返回 C 迭代器 userdata, 只能配合 fskv.next 使用, 不能像函数一样调用
 local function restoreFromFskv()
     if restored then
         return
     end
     restored = true
-    local iter = fskv.iter and fskv.iter()
-    if not iter then
+    if fskv.iter == nil or fskv.next == nil then
         log.warn("util_notify", "当前固件 fskv 不支持遍历, 跳过断电恢复")
         return
     end
+    local iter = fskv.iter()
+    if not iter then
+        log.warn("util_notify", "fskv.iter 失败, 跳过断电恢复")
+        return
+    end
     local count = 0
-    local key, value = iter()
-    while key do
-        -- 兼容旧版 "msg-t" 前缀的遗留键
-        if type(key) == "string" and (key:sub(1, #FSKV_KEY_PREFIX) == FSKV_KEY_PREFIX or key:sub(1, 5) == "msg-t") then
-            local channel, msg = defaultChannels()[1], value
-            local ok, data = pcall(json.decode, value)
-            if ok and type(data) == "table" and type(data.channel) == "string" and type(data.msg) == "string" then
-                channel, msg = data.channel, data.msg
+    local to_delete = {}  -- 删除操作放到遍历结束后执行
+    local ok, err = pcall(function()
+        while true do
+            local key = fskv.next(iter)
+            if not key then
+                break
             end
-            if util_channel[channel] and type(msg) == "string" and msg ~= "" then
-                table.insert(msg_queue, { id = key, channel = channel, msg = msg, retry = 1 })
-                count = count + 1
-                log.info("util_notify", "恢复队列消息", key, "渠道", channel)
-            else
-                -- 渠道已失效或内容异常, 清掉孤儿键
-                log.warn("util_notify", "丢弃无效持久化消息", key)
-                fskv.del(key)
+            -- 兼容旧版 "msg-t" 前缀的遗留键
+            if type(key) == "string" and (key:sub(1, #FSKV_KEY_PREFIX) == FSKV_KEY_PREFIX or key:sub(1, 5) == "msg-t") then
+                local value = fskv.get(key)
+                local channel, msg = defaultChannels()[1], value
+                local ok_dec, data = pcall(json.decode, value)
+                if ok_dec and type(data) == "table" and type(data.channel) == "string" and type(data.msg) == "string" then
+                    channel, msg = data.channel, data.msg
+                end
+                if util_channel[channel] and type(msg) == "string" and msg ~= "" then
+                    table.insert(msg_queue, { id = key, channel = channel, msg = msg, retry = 1 })
+                    count = count + 1
+                    log.info("util_notify", "恢复队列消息", key, "渠道", channel)
+                else
+                    -- 渠道已失效或内容异常, 记为待删孤儿键
+                    log.warn("util_notify", "丢弃无效持久化消息", key)
+                    table.insert(to_delete, key)
+                end
             end
         end
-        key, value = iter()
+    end)
+    for _, k in ipairs(to_delete) do
+        pcall(fskv.del, k)
+    end
+    if not ok then
+        log.error("util_notify", "fskv 恢复异常", err)
     end
     if count > 0 then
         log.info("util_notify", "断电恢复完成", "共", count, "条")
