@@ -28,7 +28,7 @@
 源码全部位于 `script/` 目录：
 
 - `main.lua` — 入口。看门狗（9 秒超时、3 秒喂狗）、DNS、短信回调、电源键事件、来电通知（CC_IND）、定时任务（SNTP/飞行模式/重启）、SLAVE 模式串口转发。
-- `config.lua` — **本地实际配置**（已 gitignore，含真实凭据），从模板 `config.example.lua` 复制而来；五节：系统与网络（超时、定时任务、FLYMODE、`POWERKEY_PIN`）/ Qbot（`QQBOT_*`）/ 短信控制安全（`SMS_ADMIN_NUMBERS`）/ 转发规则（`FORWARD_RULES`）/ 备用通知（`FEISHU_WEBHOOK` 等）。**可能含真实 webhook/secret/SMTP 密码，属敏感信息，不要外传或写入公开文档。**
+- `config.lua` — **本地实际配置**（已 gitignore），从模板 `config.example.lua` 复制而来；五节：系统与网络（超时、定时任务、FLYMODE、`POWERKEY_PIN`）/ Qbot（`QQBOT_*`）/ 短信控制安全（`SMS_ADMIN_NUMBERS`）/ 转发规则（`FORWARD_RULES`）/ 备用通知（`FEISHU_WEBHOOK` 等）。字段取值的处理要求见下方「安全红线」一节。
 - `util_forward.lua` — 转发引擎：`matchRule()`（keyword 不区分大小写部分匹配 / regular 为区分大小写的 Lua pattern，二选一；`"all"` 匹配全部）、`sendByChannel()` 及 wecom/feishu/dingding/custom_post 的实现函数都在本文件内；email 渠道委托给 `util_smtp.send(rule, msg)`。
 - `util_notify.lua` + `util_channel.lua` — 备用通知队列（转发失败、来电等走这里）。队列轮询 + 重试，`#SMS`/`#CALL` 消息失败后会写入 fskv 断电恢复。渠道实现按 key 索引，配置键在 `config.lua` 第 5 节（默认留空 = 未启用，默认渠道为 feishu）。
 - `util_smtp.lua` — SMTP 邮件（AUTH LOGIN，SSL 465 / 明文 25，正文 base64）。
