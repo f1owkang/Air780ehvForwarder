@@ -47,6 +47,7 @@ local pending_confirm = {}     -- openid -> { action, expire } 危险指令二�
 local access_token = nil
 local token_expire_at = 0      -- os.time() 秒
 local md_available = nil       -- markdown 可用性: nil=未测, true/false 本次会话内有效
+local kb_available = nil       -- 按钮键盘可用性: nil=未测, true/false 本次会话内有效
 
 local onDisconnected           -- 前向声明, 见下方实现
 
@@ -71,6 +72,11 @@ end
 --- markdown 样式: 开启 QQBOT_MARKDOWN 时返回粗体, 纯文本模式原样返回
 local function mdBold(s)
     return config.QQBOT_MARKDOWN and ("**" .. s .. "**") or s
+end
+
+--- markdown 内联代码: 开启 QQBOT_MARKDOWN 时渲染为等宽代码框, 纯文本模式原样返回
+local function mdCode(s)
+    return config.QQBOT_MARKDOWN and ("`" .. s .. "`") or s
 end
 
 --- 校验外发 REST URL: 仅 http/https 且 host 必须在白名单内 (拒绝 localhost/环回/私网/保留地址等一切非白名单目标)
@@ -190,13 +196,16 @@ local function fetchGateway()
     return data.url
 end
 
---- 发送消息 (被动/主动通用): 开启 QQBOT_MARKDOWN 时用 msg_type=2, 发送失败自动回退纯文本并记住
-local function postMessage(path, content, msg_id, seq)
-    local function buildBody(use_md)
+--- 发送消息 (被动/主动通用): markdown -> 按钮键盘逐级降级 (md+按钮 -> 纯md -> 纯文本), 失败自动记住
+local function postMessage(path, content, msg_id, seq, keyboard)
+    local function buildBody(with_md, with_kb)
         local b = {}
-        if use_md then
+        if with_md then
             b.msg_type = 2
             b.markdown = { content = content }
+            if with_kb and keyboard then
+                b.keyboard = { content = keyboard }
+            end
         else
             b.msg_type = 0
             b.content = content
@@ -208,17 +217,42 @@ local function postMessage(path, content, msg_id, seq)
         return b
     end
 
-    local use_md = config.QQBOT_MARKDOWN == true and md_available ~= false
-    local code, resp = qqApi("POST", path, buildBody(use_md))
-    if use_md then
-        if type(code) == "number" and code >= 200 and code < 300 then
-            md_available = true
-        else
-            log.warn("util_qqbot", "markdown 发送失败, 本次会话回退纯文本", "code", code, "resp", resp)
-            md_available = false
-            code, resp = qqApi("POST", path, buildBody(false))
-        end
+    local function trySend(with_md, with_kb)
+        local code, resp = qqApi("POST", path, buildBody(with_md, with_kb))
+        local ok = type(code) == "number" and code >= 200 and code < 300
+        return ok, code, resp
     end
+
+    -- 未开启 markdown: 纯文本直接发送
+    if config.QQBOT_MARKDOWN ~= true then
+        local _, code, resp = trySend(false, false)
+        return code, resp
+    end
+
+    -- 1) markdown + 按钮键盘
+    if keyboard and config.QQBOT_BUTTONS == true and kb_available ~= false then
+        local ok, code, resp = trySend(true, true)
+        if ok then
+            md_available, kb_available = true, true
+            return code, resp
+        end
+        log.warn("util_qqbot", "markdown+按钮发送失败, 去掉按钮重试", "code", code, "resp", resp)
+        kb_available = false
+    end
+
+    -- 2) 纯 markdown (本次会话已确认不可用则跳过)
+    if md_available ~= false then
+        local ok, code, resp = trySend(true, false)
+        if ok then
+            md_available = true
+            return code, resp
+        end
+        log.warn("util_qqbot", "markdown 发送失败, 回退纯文本", "code", code, "resp", resp)
+        md_available = false
+    end
+
+    -- 3) 纯文本
+    local _, code, resp = trySend(false, false)
     return code, resp
 end
 
@@ -514,7 +548,7 @@ end
 
 local function cmdReboot(arg, ctx)
     pending_confirm[ctx.openid] = { action = "reboot", expire = mcu.ticks() + 60000 }
-    return table.concat({
+    local text = table.concat({
         "⚠️ " .. mdBold("确认重启设备"),
         "",
         "重启将清理全部任务并断开连接，约 1 分钟后自动恢复。",
@@ -523,6 +557,10 @@ local function cmdReboot(arg, ctx)
         "• " .. mdBold("确认") .. " — 60 秒内重启设备",
         "• " .. mdBold("取消") .. " — 什么都不做",
     }, "\n")
+    if config.QQBOT_BUTTONS then
+        return { text = text, keyboard = buildKeyboard(ctx.openid, { "确认", "取消" }) }
+    end
+    return text
 end
 
 local function cmdConfirm(arg, ctx)
@@ -555,11 +593,50 @@ local function cmdCancel(arg, ctx)
     return "ℹ️ 没有待确认的操作"
 end
 
+--- 构建按钮键盘: 每行最多 4 个按钮, 点击即发送对应指令 (action type=2, enter=true)
+-- permission 限定仅发起人可点击
+local function buildKeyboard(openid, labels)
+    if not openid then
+        return nil
+    end
+    local rows, row = {}, {}
+    for i, label in ipairs(labels) do
+        row[#row + 1] = {
+            id = tostring(i),
+            render_data = { label = label, visited_label = label .. " ✓", style = 1 },
+            action = {
+                type = 2,
+                permission = { type = 0, user_list = { openid } },
+                data = label,
+                enter = true,
+            },
+        }
+        if #row >= 4 then
+            rows[#rows + 1] = { buttons = row }
+            row = {}
+        end
+    end
+    if #row > 0 then
+        rows[#rows + 1] = { buttons = row }
+    end
+    return { rows = rows }
+end
+
 local buildHelp                 -- 前向声明, 由 COMMANDS 自动生成
 
 -- 指令表: keys 为触发词(小写), group 决定帮助菜单分组, hidden 不出现在帮助中
 local COMMANDS = {
-    { group = "查询", keys = { "帮助", "help", "?" }, desc = "显示本帮助", fn = function() return buildHelp() end },
+    { group = "查询", keys = { "帮助", "help", "?" }, desc = "显示本帮助", fn = function(arg, ctx)
+        local text = buildHelp()
+        if config.QQBOT_BUTTONS then
+            return {
+                text = text,
+                keyboard = buildKeyboard(ctx and ctx.openid,
+                    { "状态", "信号", "短信", "设备", "定位", "规则", "测试", "重载规则" }),
+            }
+        end
+        return text
+    end },
     { group = "查询", keys = { "状态", "status" }, desc = "设备状态(信号/网络/内存/规则)", fn = function() return buildStatus() end },
     { group = "查询", keys = { "信号", "signal" }, desc = "信号强度", fn = buildSignal },
     { group = "查询", keys = { "设备", "device" }, desc = "IMEI/IMSI/ICCID/本机号码", fn = buildDeviceInfo },
@@ -627,6 +704,11 @@ local function handleCommand(raw, ctx)
     if entry then
         local ok, reply = pcall(entry.fn, arg, ctx or {})
         if ok then
+            -- 指令可返回字符串, 或 { text, keyboard } 结构 (附按钮)
+            if type(reply) == "table" then
+                reply.text = utf8Sub(reply.text or "指令执行完毕", 1500)
+                return reply
+            end
             return utf8Sub(reply or "指令执行完毕", 1500)
         end
         log.error("util_qqbot", "指令执行异常", cmd, reply)
@@ -652,12 +734,12 @@ local function handleCommand(raw, ctx)
 end
 
 --- 被动回复单聊消息 (携带 msg_id, 不受主动消息频控)
-local function replyC2C(openid, msg_id, seq, content)
+local function replyC2C(openid, msg_id, seq, content, keyboard)
     if type(openid) ~= "string" or not openid:match("^[%w%-_]+$") then
         log.error("util_qqbot", "openid 非法, 拒绝回复", openid)
         return false
     end
-    local code, resp = postMessage("/v2/users/" .. openid .. "/messages", content, msg_id, seq)
+    local code, resp = postMessage("/v2/users/" .. openid .. "/messages", content, msg_id, seq, keyboard)
     local ok = type(code) == "number" and code >= 200 and code < 300
     if ok then
         log.info("util_qqbot", "单聊回复成功", code)
@@ -668,12 +750,12 @@ local function replyC2C(openid, msg_id, seq, content)
 end
 
 --- 被动回复群@消息
-local function replyGroup(group_openid, msg_id, seq, content)
+local function replyGroup(group_openid, msg_id, seq, content, keyboard)
     if type(group_openid) ~= "string" or not group_openid:match("^[%w%-_]+$") then
         log.error("util_qqbot", "group_openid 非法, 拒绝回复", group_openid)
         return false
     end
-    local code, resp = postMessage("/v2/groups/" .. group_openid .. "/messages", content, msg_id, seq)
+    local code, resp = postMessage("/v2/groups/" .. group_openid .. "/messages", content, msg_id, seq, keyboard)
     local ok = type(code) == "number" and code >= 200 and code < 300
     if ok then
         log.info("util_qqbot", "群回复成功", code)
@@ -695,11 +777,11 @@ local function replyWelcome(openid, msg_id, is_group, group_openid)
     local content = table.concat({
         "👋 " .. mdBold("欢迎使用 Air780EHV 短信转发器"),
         "",
-        "你的 openid：" .. openid,
+        "你的 openid：" .. mdCode(openid),
         "",
         "配置方法：",
         "• 编辑 script/config.lua 第 2 节 QQBOT_ALLOW",
-        "• 填入：QQBOT_ALLOW = { \"" .. openid .. "\" }",
+        "• 填入：" .. mdCode('QQBOT_ALLOW = { "' .. openid .. '" }'),
         "• 重新烧录后发送 \"帮助\" 查看全部指令",
     }, "\n")
 
@@ -731,7 +813,12 @@ local function processMessage(t, d)
             replyWelcome(openid, msg_id, false, nil)
             return
         end
-        replyC2C(openid, msg_id, 1, handleCommand(content, { openid = openid }))
+        local reply = handleCommand(content, { openid = openid })
+        if type(reply) == "table" then
+            replyC2C(openid, msg_id, 1, reply.text, reply.keyboard)
+        else
+            replyC2C(openid, msg_id, 1, reply)
+        end
 
     elseif t == "GROUP_AT_MESSAGE_CREATE" then
         local openid = d.author and d.author.member_openid
@@ -745,7 +832,12 @@ local function processMessage(t, d)
             replyWelcome(openid, msg_id, true, group_openid)
             return
         end
-        replyGroup(group_openid, msg_id, 1, handleCommand(content, { openid = openid }))
+        local reply = handleCommand(content, { openid = openid })
+        if type(reply) == "table" then
+            replyGroup(group_openid, msg_id, 1, reply.text, reply.keyboard)
+        else
+            replyGroup(group_openid, msg_id, 1, reply)
+        end
     end
 end
 
