@@ -102,17 +102,18 @@ function util_sms_store.count()
 end
 
 --- 最近 n 条短信的文本格式 (直接用于聊天回复)
+-- 与 Qbot 卡片同款加粗标签排版; "**" 在无 markdown 权限时由 stripMd 去除
 function util_sms_store.recentText(n)
     local list = util_sms_store.recent(n)
     if #list == 0 then
-        return "暂无短信记录"
+        return "**最近短信**（0 条）\n\n暂无短信记录"
     end
-    local parts = {}
+    local parts = { string.format("**最近短信**（%d 条）", #list) }
     for i, item in ipairs(list) do
-        table.insert(parts, string.format("[%d] %s\n来自: %s\n%s",
+        table.insert(parts, string.format("**%d**　%s　来自 %s\n%s",
             i, item.time or "", item.sender or "", item.content or ""))
     end
-    return table.concat(parts, "\n----\n")
+    return table.concat(parts, "\n\n")
 end
 
 return util_sms_store

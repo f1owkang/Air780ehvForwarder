@@ -84,6 +84,29 @@ local function mdLink(text, url)
     return config.QQBOT_MARKDOWN and ("[" .. text .. "](" .. url .. ")") or url
 end
 
+--- 显示宽度: ASCII 记 1 格, CJK 等宽字符记 2 格 (按 UTF-8 首字节识别)
+local function strWidth(s)
+    local w = 0
+    for i = 1, #s do
+        local b = s:byte(i)
+        if b < 0x80 then
+            w = w + 1
+        elseif b >= 0xC0 then
+            w = w + 2
+        end
+    end
+    return w
+end
+
+--- 以全角空格补齐到目标显示宽度 (用于菜单/卡片两列对齐)
+local function padWidth(s, target)
+    local w = strWidth(s)
+    if w >= target then
+        return s
+    end
+    return s .. string.rep("　", (target - w + 1) // 2)
+end
+
 --- 去除 markdown 样式符号 (无权限回退纯文本时使用, 避免显示 ** 和 ` 等字符)
 local function stripMd(s)
     return (tostring(s)
@@ -286,8 +309,8 @@ local function syncNativeMenu()
             { type = "send_message", name = "短信", send_message = "短信" },
             { type = "send_message", name = "规则", send_message = "规则" },
             { type = "menu", name = "更多", sub_menu_items = {
-                { type = "send_message", name = "测试", send_message = "测试" },
                 { type = "send_message", name = "流量", send_message = "流量" },
+                { type = "send_message", name = "测试", send_message = "测试" },
                 { type = "send_message", name = "重载规则", send_message = "重载规则" },
                 { type = "send_message", name = "飞行模式", send_message = "飞行模式" },
                 { type = "send_message", name = "重启", send_message = "重启" },
@@ -493,27 +516,33 @@ local function buildStatus()
     return table.concat(lines, "\n")
 end
 
---- 转发规则列表 (目标地址/标识打码)
+--- 转发规则列表 (目标地址/标识打码), 与状态卡片同款加粗标签排版
 local function buildRulesList()
     local rules = util_forward.getRules() or {}
     if #rules == 0 then
-        return "未配置转发规则（config.lua 第 4 节 FORWARD_RULES）"
+        return table.concat({
+            mdBold("转发规则") .. "（0 条）",
+            "",
+            "未配置，请编辑 config.lua 第 4 节 FORWARD_RULES",
+        }, "\n")
     end
-    local lines = { mdBold("转发规则") .. "（" .. #rules .. " 条）" }
+    local lines = { mdBold("转发规则") .. "（" .. #rules .. " 条）", "" }
     for i, r in ipairs(rules) do
-        local match_desc = r.regular and ("正则:" .. r.regular)
-            or (r.keyword and ("关键词:" .. r.keyword) or "全部")
+        local match_desc = r.regular and ("正则：" .. r.regular)
+            or (r.keyword and ("关键词：" .. r.keyword) or "全部短信")
         local target = ""
         if type(r.webhook) == "string" then
             target = r.webhook:match("^https?://([^/]+)") or ""
         elseif type(r.openid) == "string" then
-            target = "QQ:" .. r.openid:sub(1, 6) .. "***"
+            target = "QQ " .. r.openid:sub(1, 6) .. "***"
         elseif type(r.group_openid) == "string" then
-            target = "QQ群:" .. r.group_openid:sub(1, 6) .. "***"
+            target = "QQ群 " .. r.group_openid:sub(1, 6) .. "***"
         elseif r.email_to then
-            target = "邮件"
+            target = "邮件 " .. tostring(r.email_to)
+        else
+            target = r.channel or "?"
         end
-        lines[#lines + 1] = string.format("[%d] %s | %s | %s", i, r.channel or "?", match_desc, target)
+        lines[#lines + 1] = "- " .. mdBold(tostring(i)) .. "　" .. match_desc .. " → " .. target
     end
     return table.concat(lines, "\n")
 end
@@ -599,9 +628,8 @@ local function cmdReboot(arg, ctx)
         "",
         "重启将清理全部任务并断开连接，约 1 分钟后自动恢复。",
         "",
-        "请选择：",
-        "• " .. mdBold("确认") .. " — 60 秒内重启设备",
-        "• " .. mdBold("取消") .. " — 什么都不做",
+        "- " .. mdBold("确认") .. "　60 秒内重启设备",
+        "- " .. mdBold("取消") .. "　放弃本次操作",
     }, "\n")
     if config.QQBOT_BUTTONS then
         return { text = text, keyboard = buildKeyboard(ctx.openid, { "确认", { "取消", 0 } }) }
@@ -642,29 +670,30 @@ end
 local buildHelp                 -- 前向声明, 由 COMMANDS 自动生成
 
 -- 指令表: keys 为触发词(小写), group 决定帮助菜单分组, hidden 不出现在帮助中
+-- menu 为帮助菜单显示名(默认取首个触发词), menu=false 表示只触发不上菜单
 local COMMANDS = {
-    { group = "查询", keys = { "帮助", "help", "?" }, desc = "显示本帮助", fn = function(arg, ctx)
+    { group = "查询", keys = { "帮助", "help", "?" }, menu = false, desc = "显示本帮助", fn = function(arg, ctx)
         local text = buildHelp()
         if config.QQBOT_BUTTONS then
             return {
                 text = text,
                 keyboard = buildKeyboard(ctx and ctx.openid, {
-                    "状态", "规则", "短信", "测试",
-                    { "重载规则", 0 }, { "飞行模式", 0 }, { "重启", 0 },
+                    "状态", "规则", "流量", "短信",
+                    { "测试", 1 }, { "重载规则", 0 }, { "飞行模式", 0 }, { "重启", 0 },
                 }),
             }
         end
         return text
     end },
-    { group = "查询", keys = { "状态", "status" }, desc = "信号/网络/定位/设备/内存一屏全览", fn = function() return buildStatus() end },
-    { group = "查询", keys = { "规则", "rules" }, desc = "转发规则列表(目标打码)", fn = buildRulesList },
-    { group = "查询", keys = { "流量", "查流量", "traffic" }, desc = "发短信查询流量", fn = cmdTraffic },
-    { group = "短信", keys = { "短信", "sms" }, desc = "最近短信, 如: 短信 10", fn = cmdRecentSms },
-    { group = "短信", keys = { "发短信" }, desc = "设备代发, 如: 发短信 13800138000 内容", fn = cmdSendSms },
+    { group = "查询", keys = { "状态", "status" }, desc = "信号/网络/定位/设备一屏全览", fn = function() return buildStatus() end },
+    { group = "查询", keys = { "规则", "rules" }, desc = "转发规则列表（目标打码）", fn = buildRulesList },
+    { group = "查询", keys = { "流量", "查流量", "traffic" }, desc = "发短信向运营商查流量", fn = cmdTraffic },
+    { group = "短信", keys = { "短信", "sms" }, menu = "短信 [N]", desc = "最近 N 条（默认 5）", fn = cmdRecentSms },
+    { group = "短信", keys = { "发短信" }, desc = "设备代发：发短信 号码 内容", fn = cmdSendSms },
     { group = "短信", keys = { "测试", "test" }, desc = "触发一次测试转发", fn = cmdTest },
-    { group = "控制", keys = { "重载规则", "reload" }, desc = "重载转发规则", fn = cmdReload },
-    { group = "控制", keys = { "飞行模式", "flymode" }, desc = "开关一次飞行模式(网络自愈)", fn = cmdFlymode },
-    { group = "控制", keys = { "重启", "reboot" }, desc = "重启设备(需二次确认)", fn = cmdReboot },
+    { group = "控制", keys = { "重载规则", "reload" }, desc = "重新加载转发配置", fn = cmdReload },
+    { group = "控制", keys = { "飞行模式", "flymode" }, desc = "开关一次（网络自愈）", fn = cmdFlymode },
+    { group = "控制", keys = { "重启", "reboot" }, desc = "需二次确认，可取消", fn = cmdReboot },
     { keys = { "确认", "confirm" }, desc = "", hidden = true, fn = cmdConfirm },
     { keys = { "取消", "cancel" }, desc = "", hidden = true, fn = cmdCancel },
 }
@@ -677,35 +706,37 @@ for _, c in ipairs(COMMANDS) do
     end
 end
 
+-- 帮助菜单分组顺序 (与原生菜单/按钮键盘一致: 查询在上, 控制在下)
+local MENU_GROUPS = { "查询", "短信", "控制" }
+
 buildHelp = function()
-    local groups = {
-        { name = "查询", items = {
-            { "状态", "信号/网络/定位/设备/内存一屏全览" },
-            { "规则", "转发规则列表（目标打码）" },
-            { "流量", "发短信查询流量" },
-        } },
-        { name = "短信", items = {
-            { "短信 [N]", "最近短信，默认 5 条" },
-            { "发短信 号码 内容", "设备代发短信" },
-            { "测试", "触发一次测试转发" },
-        } },
-        { name = "控制", items = {
-            { "重载规则", "重载转发配置" },
-            { "飞行模式", "开关一次（网络自愈）" },
-            { "重启", "需二次确认，可取消" },
-        } },
-    }
+    -- 从 COMMANDS 自动生成, 指令表即唯一数据源, 避免菜单与实现漂移
+    local groups = {}
+    for _, name in ipairs(MENU_GROUPS) do
+        groups[name] = {}
+    end
+    local name_width = 0
+    for _, c in ipairs(COMMANDS) do
+        if not c.hidden and c.menu ~= false and c.group and c.desc and c.desc ~= "" then
+            local label = (type(c.menu) == "string" and c.menu) or c.keys[1]
+            table.insert(groups[c.group], { label, c.desc })
+            name_width = math.max(name_width, strWidth(label))
+        end
+    end
     local lines = { mdBold("指令菜单") }
-    for _, g in ipairs(groups) do
-        lines[#lines + 1] = ""
-        lines[#lines + 1] = mdBold(g.name)
-        lines[#lines + 1] = ""  -- 列表前必须空行, 否则 QQ 客户端不渲染列表
-        for _, it in ipairs(g.items) do
-            lines[#lines + 1] = "- " .. it[1] .. " — " .. it[2]
+    for _, gname in ipairs(MENU_GROUPS) do
+        local items = groups[gname]
+        if #items > 0 then
+            lines[#lines + 1] = ""
+            lines[#lines + 1] = mdBold(gname)
+            lines[#lines + 1] = ""  -- 列表前必须空行, 否则 QQ 客户端不渲染列表
+            for _, it in ipairs(items) do
+                lines[#lines + 1] = "- " .. padWidth(it[1], name_width) .. "　" .. it[2]
+            end
         end
     end
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "> 支持 / 前缀 · 只 @机器人 打开本菜单 · 危险操作需二次确认"
+    lines[#lines + 1] = "> / 前缀 · @机器人 打开菜单 · 危险操作需二次确认"
     return table.concat(lines, "\n")
 end
 
@@ -794,17 +825,14 @@ local function replyGroup(group_openid, msg_id, seq, content, keyboard)
     return ok
 end
 
---- 欢迎引导文案 (含 openid 与配置方法)
+--- 欢迎引导文案 (含 openid 与配置方法), 与指令菜单同款加粗标签排版
 local function buildWelcomeText(openid)
     return table.concat({
         mdBold("欢迎使用 Air780EHV 短信转发器"),
         "",
-        "你的 openid：" .. mdCode(openid),
-        "",
-        "配置方法：",
-        "• 编辑 script/config.lua 第 2 节 QQBOT_ALLOW",
-        "• 填入：" .. mdCode('QQBOT_ALLOW = { "' .. openid .. '" }'),
-        "• 重新烧录后发送 \"帮助\" 查看全部指令",
+        "- " .. mdBold("你的 openid") .. "　" .. mdCode(openid),
+        "- " .. mdBold("配置方法") .. "　编辑 script/config.lua 的 QQBOT_ALLOW，填入该 openid",
+        "- " .. mdBold("生效方式") .. "　重新烧录后发送「帮助」查看指令菜单",
     }, "\n")
 end
 
