@@ -553,6 +553,16 @@ local function handleCommand(raw, ctx)
     cmd = cmd:lower()
 
     local entry = cmd_map[cmd]
+    if not entry then
+        -- 支持指令与参数连写, 如 "短信10" / "sms10"
+        local base, num = cmd:match("^(%D+)(%d+)$")
+        if base then
+            entry = cmd_map[base]
+            if entry then
+                arg = (arg ~= "" and (num .. " " .. arg)) or num
+            end
+        end
+    end
     if entry then
         local ok, reply = pcall(entry.fn, arg, ctx or {})
         if ok then
