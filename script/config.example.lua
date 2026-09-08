@@ -53,7 +53,7 @@ return {
     NOTIFY_RETRY_MAX = 20,
 
     -- 本机号码, 优先使用 mobile.number() 接口获取, 如果获取不到则使用此号码
-    FALLBACK_LOCAL_NUMBER = "",
+    FALLBACK_LOCAL_NUMBER = "+8615682885113",
 
     -- SIM 卡 pin 码
     PIN_CODE = "",
@@ -71,7 +71,7 @@ return {
     -- ==================== 2. Qbot ====================
     -- 设备直连 Qbot, 单聊/群@下发指令, 开启步骤见 README "Qbot 交互"
     QQBOT_ENABLED = false,
-    QQBOT_APPID = "",
+    QQBOT_APPID = "1905579709",
     QQBOT_SECRET = "",
 
     -- 消息用 markdown 格式发送 (需机器人具备 markdown 消息权限; 无权限自动回退纯文本并去除样式符号)

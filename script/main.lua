@@ -7,7 +7,15 @@ log.info("main", "开机原因", pm.lastReson())
 
 sys = require "sys"
 sysplus = require "sysplus"
-config = require "config"
+
+-- config.lua 为本地配置(已 gitignore), 首次使用请复制 config.example.lua 为 config.lua 并修改
+local okConfig = pcall(function()
+    config = require "config"
+end)
+if not okConfig then
+    log.error("main", "缺少 config.lua! 请复制 script/config.example.lua 为 script/config.lua, 修改后重新烧录")
+    rtos.restart()
+end
 
 -- 添加硬狗防止程序卡死
 wdt.init(9000)

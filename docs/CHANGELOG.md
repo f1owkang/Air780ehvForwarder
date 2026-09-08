@@ -24,6 +24,7 @@
 
 ### 规范化
 
+- 配置模板化：仓库内 `config.lua` 更名为 `config.example.lua`，本地实际 `config.lua` 加入 `.gitignore`（真实凭据不入库）；缺少 config.lua 时启动即报清晰错误提示
 - 源代码统一移入 `script/` 目录（Luatools 烧录直接选择该文件夹）；文档与硬件手册收拢至 `docs/`，根目录仅保留 README / AGENTS / LICENSE
 - 采用 Apache 2.0 协议（与 GitHub 仓库一致）；上游 air780e_forwarder 为 MIT，其版权声明在 README 致谢中保留
 - 表述统一：文档/注释/日志中"QQ 机器人"简化为 **Qbot**（代码标识符 `QQBOT_*`、`util_qqbot`、渠道名 `qq` 不变）

@@ -48,7 +48,7 @@
 ## 快速开始
 
 1. **硬件连接**：SIM 卡插入卡槽，接好 4G 天线，USB 连接电脑；
-2. **配置**：所有需要修改的配置**全部集中**在 [`script/config.lua`](script/config.lua) 一个文件，分五节——第 1~3 节（系统与网络 / Qbot / 短信控制安全）按需调整，第 4 节**转发规则 `FORWARD_RULES`** 至少配置一条渠道规则，第 5 节备用通知可选：
+2. **配置**：复制 [`script/config.example.lua`](script/config.example.lua) 为 `script/config.lua`（后者已被 gitignore，真实凭据不会入库）。所有需要修改的配置**全部集中**在这个文件，分五节——第 1~3 节（系统与网络 / Qbot / 短信控制安全）按需调整，第 4 节**转发规则 `FORWARD_RULES`** 至少配置一条渠道规则，第 5 节备用通知可选：
 
 ```lua
 FORWARD_RULES = {
