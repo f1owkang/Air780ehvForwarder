@@ -665,7 +665,7 @@ for _, c in ipairs(COMMANDS) do
 end
 
 buildHelp = function()
-    local icons = { 查询 = "🔍", 短信 = "📨", 控制 = "⚙️" }
+    local icons = { ["查询"] = "🔍", ["短信"] = "📨", ["控制"] = "⚙️" }
     local lines = { "💬 " .. mdBold("指令菜单") }
     for _, g in ipairs({ "查询", "短信", "控制" }) do
         lines[#lines + 1] = ""
