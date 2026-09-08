@@ -71,7 +71,10 @@ end
 --- 取最近 n 条短信 (新→旧)
 -- @return table 数组, 元素为 {sender, content, time}
 function util_sms_store.recent(n)
-    n = math.min(math.max(tonumber(n) or 5, 1), MAX_COUNT)
+    if type(n) ~= "number" then
+        n = tonumber(n) or 5
+    end
+    n = math.min(math.max(n, 1), MAX_COUNT)
 
     local idx = kvNumber("sms_recent_idx", 0)
     local total = kvNumber("sms_recent_total", 0)

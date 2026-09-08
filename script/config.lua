@@ -74,8 +74,8 @@ return {
     QQBOT_APPID = "",
     QQBOT_SECRET = "",
 
-    -- 消息用 markdown 格式发送 (需机器人具备 markdown 消息权限; 发送失败自动回退纯文本)
-    QQBOT_MARKDOWN = false,
+    -- 消息用 markdown 格式发送 (需机器人具备 markdown 消息权限; 无权限自动回退纯文本并去除样式符号)
+    QQBOT_MARKDOWN = true,
 
     -- 指令菜单/确认消息附带按钮键盘, 点击即发送对应指令 (需 markdown 权限)
     QQBOT_BUTTONS = false,

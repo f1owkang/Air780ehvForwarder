@@ -231,7 +231,7 @@ QQBOT_ALLOW = { "你的openid" },
 
 消息格式参考 [hermes-agent](https://github.com/NousResearch/hermes-agent) 风格：emoji 类型前缀（✅ 成功 / ❌ 失败 / ⚠️ 危险 / ℹ️ 提示）、标题加粗分块、「• 选项 — 说明」列表。
 
-**Markdown 排版与按钮**（可选，需机器人具备 markdown 消息权限）：`config.lua` 中设置 `QQBOT_MARKDOWN = true` 后，菜单/状态等回复以 markdown 格式发送（标题加粗、配置行代码框）；再设 `QQBOT_BUTTONS = true` 后，**指令菜单附带按钮键盘**（状态/信号/短信等 8 个常用指令，点击即发送），**重启确认消息附带「确认/取消」按钮**——按钮仅发起人可点击。无权限时自动逐级降级（md+按钮 → 纯 markdown → 纯文本）。
+**Markdown 排版与按钮**：markdown 排版默认开启（`QQBOT_MARKDOWN = true`），菜单/状态等回复以 markdown 格式发送（标题加粗、配置行代码框，需机器人具备 markdown 消息权限）；无权限时自动回退纯文本并去除样式符号。再设 `QQBOT_BUTTONS = true` 后，**指令菜单附带按钮键盘**（状态/信号/短信等 8 个常用指令，点击即发送），**重启确认消息附带「确认/取消」按钮**——按钮仅发起人可点击。按钮同样无权限时自动逐级降级（md+按钮 → 纯 markdown → 纯文本）。
 
 群聊使用需把机器人拉入群并 @它；白名单对单聊用户与群成员统一生效（非白名单群成员同样会收到含其 openid 的欢迎引导）。
 

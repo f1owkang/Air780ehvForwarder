@@ -79,6 +79,11 @@ local function mdCode(s)
     return config.QQBOT_MARKDOWN and ("`" .. s .. "`") or s
 end
 
+--- 去除 markdown 样式符号 (无权限回退纯文本时使用, 避免显示 ** 和 ` 字符)
+local function stripMd(s)
+    return (tostring(s):gsub("%*%*", ""):gsub("`", ""))
+end
+
 --- 校验外发 REST URL: 仅 http/https 且 host 必须在白名单内 (拒绝 localhost/环回/私网/保留地址等一切非白名单目标)
 local function checkRestUrl(url)
     if type(url) ~= "string" then
@@ -198,27 +203,24 @@ end
 
 --- 发送消息 (被动/主动通用): markdown -> 按钮键盘逐级降级 (md+按钮 -> 纯md -> 纯文本), 失败自动记住
 local function postMessage(path, content, msg_id, seq, keyboard)
-    local function buildBody(with_md, with_kb)
+    local function trySend(with_md, with_kb, text)
+        text = text or content
         local b = {}
         if with_md then
             b.msg_type = 2
-            b.markdown = { content = content }
+            b.markdown = { content = text }
             if with_kb and keyboard then
                 b.keyboard = { content = keyboard }
             end
         else
             b.msg_type = 0
-            b.content = content
+            b.content = text
         end
         if msg_id then
             b.msg_id = msg_id
             b.msg_seq = seq or 1
         end
-        return b
-    end
-
-    local function trySend(with_md, with_kb)
-        local code, resp = qqApi("POST", path, buildBody(with_md, with_kb))
+        local code, resp = qqApi("POST", path, b)
         local ok = type(code) == "number" and code >= 200 and code < 300
         return ok, code, resp
     end
@@ -251,8 +253,8 @@ local function postMessage(path, content, msg_id, seq, keyboard)
         md_available = false
     end
 
-    -- 3) 纯文本
-    local _, code, resp = trySend(false, false)
+    -- 3) 纯文本 (去除 markdown 样式符号)
+    local _, code, resp = trySend(false, false, stripMd(content))
     return code, resp
 end
 
