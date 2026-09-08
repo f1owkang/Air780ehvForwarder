@@ -128,7 +128,7 @@ FORWARD_RULES = {
     email_to = "recipient@example.com"
 }
 
--- QQ 单聊推送（openid 从设备串口日志"收到单聊消息"处获取）
+-- QQ 单聊推送（openid 从 Qbot 欢迎回复中获取）
 {
     channel = "qq",
     keyword = "all",
@@ -196,7 +196,7 @@ QQBOT_SECRET = "你的AppSecret",
 QQBOT_ALLOW = {},  -- 先留空
 ```
 
-3. 烧录后在 QQ 给机器人发一条消息，从串口日志 `收到单聊消息 openid XXXXX` 中复制你的 openid；
+3. 烧录后在 QQ 给机器人发一条消息，机器人会回复**欢迎消息**——内含你的 openid 和配置方法（每个 openid 最多回复 5 次，防止刷回复）；
 4. 填入白名单并重新烧录：
 
 ```lua
@@ -214,7 +214,7 @@ QQBOT_ALLOW = { "你的openid" },
 | `测试` / `test` | 触发一次测试转发 |
 | `发短信 号码 内容` | 通过设备 SIM 卡发送短信 |
 
-群聊使用需把机器人拉入群并 @它；白名单对单聊用户与群成员统一生效（群成员 openid 同样在串口日志中打印）。
+群聊使用需把机器人拉入群并 @它；白名单对单聊用户与群成员统一生效（非白名单群成员同样会收到含其 openid 的欢迎引导）。
 
 ## 已知问题
 
@@ -305,6 +305,6 @@ log.info("device", util_mobile.getDeviceIdentityText())
 
 <div align="center">
 
-Made with ❤ by f1owkang
+**Made with ❤ by [f1owkang](https://github.com/f1owkang)**
 
 </div>

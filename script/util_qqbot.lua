@@ -14,6 +14,9 @@ local util_qqbot = {}
 -- intents: GROUP_AND_C2C_EVENT (1 << 25), 一个位同时订阅单聊 C2C_MESSAGE_CREATE 和群@ GROUP_AT_MESSAGE_CREATE
 local INTENTS_GROUP_C2C = 33554432
 
+-- 非白名单用户欢迎消息的每 openid 回复上限 (防刷)
+local WELCOME_MAX = 5
+
 -- REST 接口允许访问的域名白名单
 local REST_HOSTS = {
     ["api.bot.qq.com"] = true,     -- 换取 access token
@@ -47,6 +50,7 @@ local heartbeat_timer = nil
 local heartbeat_interval = nil -- 毫秒
 local last_ack_time = 0        -- mcu.ticks(), 心跳 ACK 监控用
 local recent_msg_ids = {}      -- msg_id 去重环形缓存
+local welcome_count = {}       -- openid -> 已回复欢迎消息次数 (内存计数, 重启清零)
 
 local access_token = nil
 local token_expire_at = 0      -- os.time() 秒
@@ -407,6 +411,32 @@ local function replyGroup(group_openid, msg_id, seq, content)
     return ok
 end
 
+--- 非白名单用户回复欢迎引导消息 (含其 openid 与配置方法), 每个 openid 最多 WELCOME_MAX 次防刷
+local function replyWelcome(openid, msg_id, is_group, group_openid)
+    local count = welcome_count[openid] or 0
+    if count >= WELCOME_MAX then
+        log.warn("util_qqbot", "欢迎消息次数用尽, 忽略", "openid", openid, "已回复", count)
+        return
+    end
+    welcome_count[openid] = count + 1
+
+    local content = table.concat({
+        "欢迎使用 Air780EHV 短信转发器!",
+        "",
+        "你的 openid: " .. openid,
+        "",
+        "配置方法: 编辑 script/config.lua 第 2 节 QQBOT_ALLOW, 加入后重新烧录:",
+        'QQBOT_ALLOW = { "' .. openid .. '" }',
+        '配置完成后发送 "帮助" 查看可用指令',
+    }, "\n")
+
+    if is_group then
+        replyGroup(group_openid, msg_id, 1, content)
+    else
+        replyC2C(openid, msg_id, 1, content)
+    end
+end
+
 --- 处理一条聊天消息事件 (在独立协程中执行, 允许阻塞)
 local function processMessage(t, d)
     local msg_id = d.id
@@ -424,8 +454,8 @@ local function processMessage(t, d)
             return
         end
         if not isAllowed(openid) then
-            log.warn("util_qqbot", "拒绝非白名单用户", "openid", openid)
-            log.warn("util_qqbot", "如需放行, 将该 openid 加入 config.QQBOT_ALLOW")
+            log.warn("util_qqbot", "非白名单用户, 回复欢迎引导", "openid", openid)
+            replyWelcome(openid, msg_id, false, nil)
             return
         end
         replyC2C(openid, msg_id, 1, utf8Sub(handleCommand(content), 1500))
@@ -438,7 +468,8 @@ local function processMessage(t, d)
             return
         end
         if not isAllowed(openid) then
-            log.warn("util_qqbot", "拒绝非白名单群成员", "openid", openid)
+            log.warn("util_qqbot", "非白名单群成员, 回复欢迎引导", "openid", openid)
+            replyWelcome(openid, msg_id, true, group_openid)
             return
         end
         replyGroup(group_openid, msg_id, 1, utf8Sub(handleCommand(content), 1500))
@@ -683,8 +714,7 @@ function util_qqbot.start()
     end
 
     if type(config.QQBOT_ALLOW) ~= "table" or #config.QQBOT_ALLOW == 0 then
-        log.warn("util_qqbot", "QQBOT_ALLOW 白名单为空, 所有人将被拒绝")
-        log.warn("util_qqbot", "首次在 QQ 发消息后, 从串口日志复制 openid 加入白名单")
+        log.warn("util_qqbot", "QQBOT_ALLOW 白名单为空, 将对所有消息回复欢迎引导(含 openid 与配置方法)")
     end
 
     TaskManager.create(TASK_MAIN, qqbotMainTask)
