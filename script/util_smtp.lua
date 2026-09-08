@@ -19,9 +19,13 @@ local function readResponse(netc, taskName, timeout)
     local deadline = mcu.ticks() + (timeout or SMTP_TIMEOUT)
     local buffer = ""
     while mcu.ticks() < deadline do
-        local ok = libnet.wait(taskName, deadline - mcu.ticks(), netc)
-        if not ok then
+        -- 两个返回值: 第1个 false=网络异常; 第2个 false=超时
+        local no_err, has_evt = libnet.wait(taskName, deadline - mcu.ticks(), netc)
+        if not no_err then
             return nil  -- 网络异常
+        end
+        if not has_evt then
+            break  -- 等待超时
         end
         local read_ok, data = socket.read(netc, 1500)
         if read_ok and type(data) == "string" and data ~= "" then
@@ -44,7 +48,8 @@ end
 -- @return 响应字符串 or nil
 local function sendCommand(netc, taskName, cmd, timeout)
     timeout = timeout or SMTP_TIMEOUT
-    log.debug("util_smtp", "发送:", (cmd or ""):gsub("\r\n$", ""))
+    local show = (cmd or ""):gsub("\r\n$", "")
+    log.debug("util_smtp", "发送:", show)
     if not libnet.tx(taskName, timeout, netc, cmd) then
         log.error("util_smtp", "命令发送失败")
         return nil
@@ -192,6 +197,8 @@ end
 --- 通过SMTP发送邮件
 -- libnet 依赖 waitMsg, 必须用 sysplus.taskInitEx 创建与 taskName 同名的协程,
 -- 普通 sys.taskInit 协程里调用会报 "taskInitEx启动的task才能使用waitMsg"
+-- 注意: taskInitEx 第 3 个回调是"收到非目标消息时的回调"(不是错误回调),
+-- socket 事件类型不匹配的消息都会走到这里, 只能忽略, 不能当作失败处理
 -- @param rule 转发规则(含SMTP配置)
 -- @param msg 消息内容
 -- @return true成功, false失败
@@ -207,9 +214,9 @@ function util_smtp.send(rule, msg)
         end
         -- 通知调用方协程取结果
         sys.publish(event, ok and res == true)
-    end, taskName, function(err)
-        log.error("util_smtp", "任务创建失败", err)
-        sys.publish(event, false)
+    end, taskName, function(_msg)
+        -- 非目标消息(非 socket.EVENT 的事件), 忽略即可, 继续等待
+        log.debug("util_smtp", "非目标消息, 忽略", type(_msg))
     end)
 
     -- 调用方在哪个协程都行, sys.waitUntil 普通协程可用; 90 秒兜底防挂死

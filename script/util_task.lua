@@ -23,6 +23,8 @@ function TaskManager.create(name, func, callback)
     -- 删除已存在的同名任务
     TaskManager.delete(name)
 
+    -- 注意: sysplus.taskInitEx 第 3 个回调是"收到非目标消息时的回调"(不是错误回调),
+    -- 任务使用 waitMsg 时, 不匹配的消息都会走到这里 —— 只能忽略, 不能当作任务失败清理
     local task = sysplus.taskInitEx(function()
         local success, err = pcall(func)
         if not success then
@@ -35,10 +37,10 @@ function TaskManager.create(name, func, callback)
             if callback then callback(true, nil) end
         end
         TaskManager.tasks[name] = nil
-    end, name, function(err)
-        log.error("TaskManager", name, "init error:", err)
-        TaskManager.tasks[name] = nil
-        if callback then callback(false, err) end
+    end, name, function(_msg)
+        if TaskManager.debug then
+            log.info("TaskManager", name, "非目标消息, 忽略", type(_msg))
+        end
     end)
 
     TaskManager.tasks[name] = task
