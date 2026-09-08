@@ -71,7 +71,7 @@ return {
     -- ==================== 2. Qbot ====================
     -- 设备直连 Qbot, 单聊/群@下发指令, 开启步骤见 README "Qbot 交互"
     QQBOT_ENABLED = false,
-    QQBOT_APPID = "1905579709",
+    QQBOT_APPID = "",
     QQBOT_SECRET = "",
 
     -- 消息用 markdown 格式发送 (需机器人具备 markdown 消息权限; 无权限自动回退纯文本并去除样式符号)
@@ -79,6 +79,9 @@ return {
 
     -- 指令菜单/确认消息附带按钮键盘, 点击即发送对应指令 (需 markdown 权限)
     QQBOT_BUTTONS = false,
+
+    -- 连接成功后自动同步单聊窗口底部的原生菜单 (状态/短信/规则/更多, 幂等)
+    QQBOT_MENU = true,
 
     -- 允许下指令的 QQ openid 白名单 (防止他人操控设备)
     -- 未配置的用户发消息会收到欢迎回复(含其 openid 与配置方法), 每个 openid 最多 3 次

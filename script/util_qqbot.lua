@@ -79,9 +79,27 @@ local function mdCode(s)
     return config.QQBOT_MARKDOWN and ("`" .. s .. "`") or s
 end
 
---- 去除 markdown 样式符号 (无权限回退纯文本时使用, 避免显示 ** 和 ` 字符)
+--- markdown 链接: 开启时渲染为 [文字](url), 纯文本模式只给 url
+local function mdLink(text, url)
+    return config.QQBOT_MARKDOWN and ("[" .. text .. "](" .. url .. ")") or url
+end
+
+--- 去除 markdown 样式符号 (无权限回退纯文本时使用, 避免显示 ** 和 ` 等字符)
 local function stripMd(s)
-    return (tostring(s):gsub("%*%*", ""):gsub("`", ""))
+    return (tostring(s)
+        :gsub("%[([^%]]*)%]%(([^)]*)%)", "%1 %2") -- 链接 -> 文字 url
+        :gsub("%*%*", "")
+        :gsub("`", "")
+        :gsub("\n> ", "\n")
+        :gsub("^> ", ""))
+end
+
+--- 手机号打码 (群聊场景防泄漏): 138****1234
+local function maskNumber(n)
+    if type(n) ~= "string" or #n < 8 then
+        return "****"
+    end
+    return n:sub(1, 3) .. "****" .. n:sub(-4)
 end
 
 --- 校验外发 REST URL: 仅 http/https 且 host 必须在白名单内 (拒绝 localhost/环回/私网/保留地址等一切非白名单目标)
@@ -258,6 +276,30 @@ local function postMessage(path, content, msg_id, seq, keyboard)
     return code, resp
 end
 
+--- 同步原生菜单 (单聊窗口底部的官方按钮, PUT /v2/menu, 全局生效, 幂等可重复调用)
+local function syncNativeMenu()
+    local menu = {
+        items = {
+            { type = "send_message", name = "状态", send_message = "状态" },
+            { type = "send_message", name = "短信", send_message = "短信" },
+            { type = "send_message", name = "规则", send_message = "规则" },
+            { type = "menu", name = "更多", sub_menu_items = {
+                { type = "send_message", name = "测试", send_message = "测试" },
+                { type = "send_message", name = "流量", send_message = "流量" },
+                { type = "send_message", name = "重载规则", send_message = "重载规则" },
+                { type = "send_message", name = "飞行模式", send_message = "飞行模式" },
+                { type = "send_message", name = "重启", send_message = "重启" },
+            } },
+        },
+    }
+    local code, resp = qqApi("PUT", "/v2/menu", { menu = menu })
+    if type(code) == "number" and code >= 200 and code < 300 then
+        log.info("util_qqbot", "原生菜单已同步", resp)
+    else
+        log.warn("util_qqbot", "原生菜单同步失败", "code", code, "resp", resp)
+    end
+end
+
 -- ===== WebSocket 网关协议 =====
 
 local function wsSendRaw(text)
@@ -372,35 +414,6 @@ local function isAllowed(openid)
     return false
 end
 
-local function buildStatus()
-    local lines = { "📊 " .. mdBold("设备状态") }
-
-    local rsrp, csq = mobile.rsrp(), mobile.csq()
-    if rsrp and rsrp ~= 0 then
-        local sig = "信号: " .. rsrp .. "dBm (RSRP)"
-        if csq and csq >= 0 and csq <= 31 then
-            sig = sig .. " CSQ:" .. csq
-        end
-        lines[#lines + 1] = sig
-    else
-        lines[#lines + 1] = "信号: 获取失败"
-    end
-
-    local oper = util_mobile.getOper(true)
-    lines[#lines + 1] = "运营商: " .. (oper ~= "" and oper or "未知")
-    lines[#lines + 1] = "网络: " .. util_mobile.status()
-
-    local sec = math.floor(mcu.ticks() / 1000)
-    lines[#lines + 1] = string.format("开机时长: %02d:%02d:%02d",
-        math.floor(sec / 3600), math.floor((sec % 3600) / 60), sec % 60)
-
-    lines[#lines + 1] = "Lua 内存: " .. string.format("%.1f", collectgarbage("count")) .. " KB"
-    lines[#lines + 1] = "转发规则: " .. #(util_forward.getRules() or {}) .. " 条"
-    lines[#lines + 1] = "短信缓存: " .. util_sms_store.count() .. " 条"
-    lines[#lines + 1] = "Qbot 通道: " .. state
-    return table.concat(lines, "\n")
-end
-
 -- ===== 指令系统 (表驱动, 帮助菜单自动生成) =====
 
 --- 全角转半角 (字母/数字/标点), 全角空格转普通空格
@@ -430,42 +443,56 @@ local function normalizeInput(raw)
     return s
 end
 
-local function buildSignal()
+--- 综合状态卡片: 合并原 信号/设备/定位/时间 指令, 一屏全览
+local function buildStatus()
+    local lines = { "📊 " .. mdBold("设备状态"), "" }
+
+    -- 信号
     local rsrp, csq = mobile.rsrp(), mobile.csq()
     if rsrp and rsrp ~= 0 then
-        local s = "📶 RSRP: " .. rsrp .. " dBm"
+        local grade = (rsrp >= -80 and "优") or (rsrp >= -90 and "良") or (rsrp >= -100 and "一般") or "差"
+        local sig = "- 📶 信号：" .. rsrp .. " dBm（" .. grade .. "）"
         if csq and csq >= 0 and csq <= 31 then
-            s = s .. "  CSQ: " .. csq
+            sig = sig .. " · CSQ " .. csq
         end
-        if rsrp >= -80 then s = s .. "（优）"
-        elseif rsrp >= -90 then s = s .. "（良）"
-        elseif rsrp >= -100 then s = s .. "（一般）"
-        else s = s .. "（差）" end
-        return s
-    end
-    return "❌ 信号获取失败"
-end
-
-local function buildDeviceInfo()
-    local lines = { "📱 " .. mdBold("设备信息") }
-    local id_text = util_mobile.getDeviceIdentityText()
-    if id_text ~= "" then
-        lines[#lines + 1] = id_text
-    end
-    local number = util_mobile.getLocalNumber(2, 1000)
-    if number then
-        lines[#lines + 1] = "本机号码: " .. number .. " (系统获取)"
-    elseif config.FALLBACK_LOCAL_NUMBER ~= "" then
-        lines[#lines + 1] = "本机号码: " .. config.FALLBACK_LOCAL_NUMBER .. " (备用配置)"
+        lines[#lines + 1] = sig
     else
-        lines[#lines + 1] = "本机号码: 未知"
+        lines[#lines + 1] = "- 📶 信号：获取失败"
     end
-    return table.concat(lines, "\n")
-end
 
-local function buildTimeInfo()
+    -- 网络
+    local oper = util_mobile.getOper(true)
+    lines[#lines + 1] = "- 📡 网络：" .. util_mobile.status() .. " · " .. (oper ~= "" and oper or "未知运营商")
+
+    -- 时间与开机时长
     local synced = os.time() > 1714500000
-    return "🕐 设备时间：" .. os.date("%Y-%m-%d %H:%M:%S") .. (synced and "（已同步）" or "（未同步）")
+    local sec = math.floor(mcu.ticks() / 1000)
+    lines[#lines + 1] = "- 🕐 时间：" .. os.date("%Y-%m-%d %H:%M:%S") .. (synced and "（已同步）" or "（未同步）")
+        .. " · 开机 " .. string.format("%02d:%02d:%02d", math.floor(sec / 3600), math.floor((sec % 3600) / 60), sec % 60)
+
+    -- 定位 (后台周期刷新的缓存)
+    local _, _, map_link = util_location.get()
+    if map_link ~= "" then
+        lines[#lines + 1] = "- 📍 定位：" .. mdLink("查看地图", map_link)
+    else
+        lines[#lines + 1] = "- 📍 定位：暂无（后台刷新中）"
+    end
+
+    -- 设备标识 (打码展示)
+    local ids = util_mobile.getDeviceIdentifiers()
+    local imei = type(ids.imei) == "string" and (ids.imei:sub(1, 6) .. "***") or "未知"
+    local number = util_mobile.getLocalNumber(2, 1000)
+    if not number or number == "" then
+        number = config.FALLBACK_LOCAL_NUMBER ~= "" and config.FALLBACK_LOCAL_NUMBER or nil
+    end
+    lines[#lines + 1] = "- 📱 设备：IMEI " .. imei .. " · 本机 " .. (number and maskNumber(number) or "未知")
+
+    -- 运行概况
+    lines[#lines + 1] = "- 🧠 运行：内存 " .. string.format("%.1f", collectgarbage("count")) .. " KB"
+        .. " · 规则 " .. #(util_forward.getRules() or {}) .. " 条 · 短信缓存 " .. util_sms_store.count() .. " 条"
+    lines[#lines + 1] = "- 🔌 Qbot：" .. state
+
+    return table.concat(lines, "\n")
 end
 
 --- 转发规则列表 (目标地址/标识打码)
@@ -523,22 +550,6 @@ local function cmdTraffic()
     return "📨 已向运营商发送流量查询短信，回复将以短信到达并按规则转发"
 end
 
-local function cmdLocation()
-    local old_lat = util_location.get()
-    util_location.refresh()
-    -- 等待定位刷新 (最长 20 秒), 超时回退缓存
-    local deadline = mcu.ticks() + 20000
-    while mcu.ticks() < deadline do
-        sys.wait(2000)
-        local lat, _, link = util_location.get()
-        if link ~= "" and (lat ~= old_lat or old_lat == 0) then
-            return "📍 定位：" .. link
-        end
-    end
-    local _, _, link = util_location.get()
-    return link ~= "" and ("📍 定位（缓存）：" .. link) or "❌ 定位失败，稍后再试"
-end
-
 local function cmdFlymode()
     log.warn("util_qqbot", "指令触发飞行模式自愈")
     mobile.flymode(0, true)
@@ -548,17 +559,21 @@ local function cmdFlymode()
     return "✅ 飞行模式已执行一次，网络状态：" .. util_mobile.status() .. "\nℹ️ Qbot 通道将自动重连"
 end
 
---- 构建按钮键盘: 每行最多 4 个按钮, 点击即发送对应指令 (action type=2, enter=true)
--- permission 限定仅发起人可点击
-local function buildKeyboard(openid, labels)
+--- 构建按钮键盘: entries 为字符串或 { label, style } (style: 0=灰色线框, 1=蓝色线框), 每行最多 4 个
+-- permission 限定仅发起人可点击; action type=2 + enter=true 即点击即发送指令
+local function buildKeyboard(openid, entries)
     if not openid then
         return nil
     end
     local rows, row = {}, {}
-    for i, label in ipairs(labels) do
+    for i, e in ipairs(entries) do
+        local label, style = e, 1
+        if type(e) == "table" then
+            label, style = e[1], e[2] or 1
+        end
         row[#row + 1] = {
             id = tostring(i),
-            render_data = { label = label, visited_label = label .. " ✓", style = 1 },
+            render_data = { label = label, visited_label = label .. " ✓", style = style },
             action = {
                 type = 2,
                 permission = { type = 0, user_list = { openid } },
@@ -589,7 +604,7 @@ local function cmdReboot(arg, ctx)
         "• " .. mdBold("取消") .. " — 什么都不做",
     }, "\n")
     if config.QQBOT_BUTTONS then
-        return { text = text, keyboard = buildKeyboard(ctx.openid, { "确认", "取消" }) }
+        return { text = text, keyboard = buildKeyboard(ctx.openid, { "确认", { "取消", 0 } }) }
     end
     return text
 end
@@ -633,19 +648,17 @@ local COMMANDS = {
         if config.QQBOT_BUTTONS then
             return {
                 text = text,
-                keyboard = buildKeyboard(ctx and ctx.openid,
-                    { "状态", "信号", "短信", "设备", "定位", "规则", "测试", "重载规则" }),
+                keyboard = buildKeyboard(ctx and ctx.openid, {
+                    "状态", "规则", "短信", "测试",
+                    { "重载规则", 0 }, { "飞行模式", 0 }, { "重启", 0 },
+                }),
             }
         end
         return text
     end },
-    { group = "查询", keys = { "状态", "status" }, desc = "设备状态(信号/网络/内存/规则)", fn = function() return buildStatus() end },
-    { group = "查询", keys = { "信号", "signal" }, desc = "信号强度", fn = buildSignal },
-    { group = "查询", keys = { "设备", "device" }, desc = "IMEI/IMSI/ICCID/本机号码", fn = buildDeviceInfo },
-    { group = "查询", keys = { "定位", "位置", "location" }, desc = "基站定位地图链接", fn = cmdLocation },
+    { group = "查询", keys = { "状态", "status" }, desc = "信号/网络/定位/设备/内存一屏全览", fn = function() return buildStatus() end },
+    { group = "查询", keys = { "规则", "rules" }, desc = "转发规则列表(目标打码)", fn = buildRulesList },
     { group = "查询", keys = { "流量", "查流量", "traffic" }, desc = "发短信查询流量", fn = cmdTraffic },
-    { group = "查询", keys = { "时间", "time" }, desc = "设备时间与同步状态", fn = buildTimeInfo },
-    { group = "查询", keys = { "规则", "rules" }, desc = "列出转发规则(目标打码)", fn = buildRulesList },
     { group = "短信", keys = { "短信", "sms" }, desc = "最近短信, 如: 短信 10", fn = cmdRecentSms },
     { group = "短信", keys = { "发短信" }, desc = "设备代发, 如: 发短信 13800138000 内容", fn = cmdSendSms },
     { group = "短信", keys = { "测试", "test" }, desc = "触发一次测试转发", fn = cmdTest },
@@ -665,20 +678,35 @@ for _, c in ipairs(COMMANDS) do
 end
 
 buildHelp = function()
-    local icons = { ["查询"] = "🔍", ["短信"] = "📨", ["控制"] = "⚙️" }
-    local lines = { "💬 " .. mdBold("指令菜单") }
-    for _, g in ipairs({ "查询", "短信", "控制" }) do
+    local groups = {
+        { icon = "🔍", name = "查询", items = {
+            { "状态", "信号/网络/定位/设备/内存一屏全览" },
+            { "规则", "转发规则列表（目标打码）" },
+            { "流量", "发短信查询流量" },
+        } },
+        { icon = "📨", name = "短信", items = {
+            { "短信 [N]", "最近短信，默认 5 条" },
+            { "发短信 号码 内容", "设备代发短信" },
+            { "测试", "触发一次测试转发" },
+        } },
+        { icon = "⚙️", name = "控制", items = {
+            { "重载规则", "重载转发配置" },
+            { "飞行模式", "开关一次（网络自愈）" },
+            { "重启", "需二次确认，可取消" },
+        } },
+    }
+    local lines = { "📋 " .. mdBold("指令菜单") }
+    for _, g in ipairs(groups) do
         lines[#lines + 1] = ""
-        lines[#lines + 1] = icons[g] .. " " .. mdBold(g)
-        for _, c in ipairs(COMMANDS) do
-            if c.group == g and not c.hidden then
-                lines[#lines + 1] = "• " .. table.concat(c.keys, "/") .. " — " .. c.desc
-            end
+        lines[#lines + 1] = g.icon .. " " .. mdBold(g.name)
+        lines[#lines + 1] = ""  -- 列表前必须空行, 否则 QQ 客户端不渲染列表
+        for _, it in ipairs(g.items) do
+            lines[#lines + 1] = "- " .. mdBold(it[1]) .. " — " .. it[2]
         end
     end
     lines[#lines + 1] = ""
-    lines[#lines + 1] = "ℹ️ 支持 / 前缀；直接 @机器人 不带内容可打开本菜单"
-    lines[#lines + 1] = '⚠️ 危险操作需二次确认，发送 "取消" 可撤销'
+    lines[#lines + 1] = "> 💡 支持 / 前缀 · 只 @机器人 打开本菜单"
+    lines[#lines + 1] = '> ⚠️ 危险操作需二次确认，发送 "取消" 可撤销'
     return table.concat(lines, "\n")
 end
 
@@ -883,6 +911,15 @@ local function handleWsMessage(text)
             log.info("util_qqbot", "鉴权成功, 机器人已就绪",
                 "用户名", (msg.d and msg.d.user and msg.d.user.username) or "未知")
             sys.publish(EVT, "READY")
+            -- 同步单聊原生菜单 (幂等, 每次连接后执行一次)
+            if config.QQBOT_MENU ~= false then
+                sys.taskInit(function()
+                    local ok2, err = pcall(syncNativeMenu)
+                    if not ok2 then
+                        log.error("util_qqbot", "原生菜单同步异常", err)
+                    end
+                end)
+            end
         elseif t == "RESUMED" then
             backoff_ms = 3000
             state = "RUNNING"
