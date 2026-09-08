@@ -4,11 +4,11 @@
 
 **基于 LuatOS 的 Air780EHV 智能短信转发器 —— 短信一到，送达你的每个聊天软件**
 
-![version](https://img.shields.io/badge/version-1.3.0-blue)
-![chip](https://img.shields.io/badge/芯片-Air780EHV-green)
-![platform](https://img.shields.io/badge/平台-LuatOS%20·%20Lua-orange)
-![channel](https://img.shields.io/badge/转发渠道-6%20种-purple)
-![license](https://img.shields.io/badge/license-Apache%202.0-green)
+![version](https://img.shields.io/badge/Version-1.3.0-blue)
+![chip](https://img.shields.io/badge/Chip-Air780EHV-green)
+![platform](https://img.shields.io/badge/Platform-LuatOS%20·%20Lua-orange)
+![channel](https://img.shields.io/badge/Channel-6%20种-purple)
+![license](https://img.shields.io/badge/License-Apache%202.0-green)
 
 [功能特性](#功能特性) · [硬件要求](#硬件要求) · [快速开始](#快速开始) · [转发渠道](#转发渠道) · [Qbot-交互](#qbot-交互) · [已知问题](#已知问题) · [开源协议](#开源协议)
 
